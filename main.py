@@ -1,5 +1,12 @@
 """부동산 경매 분석 AI 에이전트 – Streamlit 엔트리포인트"""
 
+import logging
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 from dotenv import load_dotenv
 
 load_dotenv()

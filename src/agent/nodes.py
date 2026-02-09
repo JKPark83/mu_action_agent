@@ -40,10 +40,12 @@ def _get_llm(state: AgentState):
 
 def parse_input(state: AgentState) -> dict:
     last_msg = state["messages"][-1]
+    logger.info("[parse_input] 입력 메시지: %s", last_msg.content[:100])
 
     try:
         llm = _get_llm(state)
     except ValueError as e:
+        logger.error("[parse_input] LLM 생성 실패: %s", e)
         return {
             "messages": [AIMessage(content=f"LLM 설정 오류: {e}")],
             "error": str(e),
@@ -58,7 +60,7 @@ def parse_input(state: AgentState) -> dict:
             HumanMessage(content=last_msg.content),
         ])
     except Exception as e:
-        logger.warning("입력 파싱 실패: %s", e)
+        logger.error("[parse_input] structured output 파싱 실패: %s", e)
         return {
             "messages": [AIMessage(content=(
                 "입력 정보를 파싱하지 못했습니다. "
@@ -68,6 +70,7 @@ def parse_input(state: AgentState) -> dict:
             "current_step": "error",
         }
 
+    logger.info("[parse_input] 파싱 성공: address=%s, property_type=%s", result.address, result.property_type)
     return {
         "auction_case": result.model_dump(),
         "current_step": "parsed",
@@ -80,10 +83,14 @@ def parse_input(state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 
 def router(state: AgentState) -> dict:
+    logger.debug("[router] error=%s, auction_case=%s", state.get("error"), bool(state.get("auction_case")))
     if state.get("error"):
+        logger.warning("[router] error 발견 → need_more_info 라우팅: %s", state.get("error"))
         return {"route": "need_more_info", "current_step": "routing"}
     if not state.get("auction_case"):
+        logger.warning("[router] auction_case 없음 → need_more_info 라우팅")
         return {"route": "need_more_info", "current_step": "routing"}
+    logger.info("[router] 정상 → all 라우팅 (fetch_market_data로 진행)")
     return {"route": "all", "current_step": "routing"}
 
 
@@ -107,13 +114,42 @@ def fetch_market_data(state: AgentState) -> dict:
             address=case["address"],
             months=6,
         )
+
+        # result가 None이거나 비어있는 경우 확인
+        if result is None:
+            logger.warning("시장 데이터 조회 실패: API에서 None 반환")
+            return {
+                "market_data": None,
+                "current_step": "market_data",
+                "error": "market_data_empty",
+            }
+
+        # result 객체가 비어있는지 확인
+        market_dict = result.model_dump()
+        if not market_dict or market_dict.get("avg_price_per_m2") is None:
+            logger.warning("시장 데이터가 비어있음: %s", market_dict)
+            return {
+                "market_data": market_dict,
+                "current_step": "market_data",
+                "error": "market_data_empty",
+            }
+
+        logger.info("시장 데이터 조회 성공: %s, 평균가격(m2): %s", case["address"], market_dict.get("avg_price_per_m2"))
+        return {
+            "market_data": market_dict,
+            "current_step": "market_data",
+        }
+
+    except Exception as e:
+        logger.error("시장 데이터 조회 중 오류 발생: %s (주소: %s, 타입: %s)",
+                    e, case.get("address"), case.get("property_type"))
+        return {
+            "market_data": None,
+            "current_step": "market_data",
+            "error": f"market_fetch_failed: {str(e)}",
+        }
     finally:
         client.close()
-
-    return {
-        "market_data": result.model_dump(),
-        "current_step": "market_data",
-    }
 
 
 # ---------------------------------------------------------------------------
