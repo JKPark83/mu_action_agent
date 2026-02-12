@@ -73,7 +73,7 @@
 
 | 영역 | 기술 | 비고 |
 |------|------|------|
-| **Frontend** | React + TypeScript | SPA, 반응형 웹 |
+| **Frontend** | React + TypeScript | SPA, 반응형 웹 (Node.js 20.19+ 또는 22.12+) |
 | **Backend** | FastAPI (Python) | 비동기 API, uv venv 가상환경 |
 | **AI Agent** | LangGraph + DeepAgent | 멀티 에이전트 워크플로우 |
 | **LLM** | Anthropic Claude (Sonnet/Opus) | 경매 분석 및 자연어 처리 |

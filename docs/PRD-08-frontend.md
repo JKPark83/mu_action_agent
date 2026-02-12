@@ -15,7 +15,8 @@
 ### 1.2 기술 스택
 | 항목 | 기술 | 비고 |
 |------|------|------|
-| **프레임워크** | React 18+ | SPA (Single Page Application) |
+| **런타임** | Node.js 20.19+ 또는 22.12+ | Vite 7 요구사항 |
+| **프레임워크** | React 19+ | SPA (Single Page Application) |
 | **언어** | TypeScript | 타입 안전성 |
 | **빌드 도구** | Vite | 빠른 빌드 및 HMR |
 | **상태 관리** | TanStack Query (React Query) | 서버 상태 관리 |
