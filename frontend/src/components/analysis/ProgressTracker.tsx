@@ -7,12 +7,12 @@ interface Stage {
 }
 
 const STAGE_LABELS: Record<string, string> = {
-  document_parsing: '문서 파싱',
+  parsed_documents: '문서 파싱',
   rights_analysis: '권리 분석',
   market_data: '시세 분석',
   news_analysis: '뉴스 분석',
   valuation: '가치 평가',
-  report_generation: '보고서 생성',
+  report: '보고서 생성',
 }
 
 function StageIcon({ status }: { status: StageProgress['status'] }) {

@@ -18,7 +18,8 @@ export default function AnalysisProgress() {
   })
 
   // WebSocket이 없으면 polling 데이터 사용
-  const currentProgress = progress ?? polledStatus
+  // polling 응답은 { id, status, progress: { overall, stages } } 구조
+  const currentProgress = progress ?? polledStatus?.progress
 
   // 완료 시 자동 이동하지 않고 버튼 표시
   const isDone = isComplete || polledStatus?.status === 'done'

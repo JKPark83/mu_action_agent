@@ -3,21 +3,26 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.graph import run_analysis_workflow
 from app.api.deps import get_db
-from app.api.websocket.manager import manager
 from app.database import async_session
 from app.models.analysis import Analysis, AnalysisStatus
 
 logger = logging.getLogger("app.analyses")
 
 router = APIRouter()
+
+
+class CreateAnalysisRequest(BaseModel):
+    description: str | None = None
+    case_number: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -58,49 +63,20 @@ def _build_progress(analysis: Analysis) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Background workflow placeholder
-# ---------------------------------------------------------------------------
-
-async def run_analysis_workflow(analysis_id: str) -> None:
-    """Run the full analysis pipeline in the background.
-
-    This is a placeholder that will be replaced by the LangGraph workflow
-    in Task-06. For now it just transitions the status to RUNNING so we
-    can verify the BackgroundTasks wiring works.
-    """
-    async with async_session() as db:
-        analysis = await db.get(Analysis, analysis_id)
-        if analysis is None:
-            logger.error("analysis not found: %s", analysis_id)
-            return
-
-        analysis.status = AnalysisStatus.RUNNING
-        analysis.started_at = datetime.now(timezone.utc)
-        await db.commit()
-
-        await manager.send_progress(analysis_id, {
-            "type": "status_update",
-            "stage": "workflow",
-            "status": "running",
-            "progress": 0,
-            "message": "분석을 시작합니다...",
-        })
-
-        # TODO: Task-06에서 LangGraph StateGraph 실행으로 교체
-        logger.info("analysis workflow started: %s", analysis_id)
-
-
-# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("", status_code=201)
 async def create_analysis(
     background_tasks: BackgroundTasks,
+    body: CreateAnalysisRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """새 분석 작업을 생성하고 백그라운드 워크플로우를 시작합니다."""
     analysis = Analysis()
+    if body:
+        analysis.description = body.description
+        analysis.case_number = body.case_number
     db.add(analysis)
     await db.commit()
     await db.refresh(analysis)
@@ -117,7 +93,13 @@ async def list_analyses(db: AsyncSession = Depends(get_db)) -> list[dict]:
     result = await db.execute(select(Analysis).order_by(Analysis.created_at.desc()))
     analyses = result.scalars().all()
     return [
-        {"id": a.id, "status": a.status.value, "created_at": a.created_at.isoformat()}
+        {
+            "id": a.id,
+            "status": a.status.value,
+            "description": a.description,
+            "case_number": a.case_number,
+            "created_at": a.created_at.isoformat(),
+        }
         for a in analyses
     ]
 
@@ -134,7 +116,13 @@ async def get_analysis(analysis_id: str, db: AsyncSession = Depends(get_db)) -> 
         "description": analysis.description,
         "case_number": analysis.case_number,
         "created_at": analysis.created_at.isoformat(),
+        "started_at": analysis.started_at.isoformat() if analysis.started_at else None,
+        "completed_at": analysis.completed_at.isoformat() if analysis.completed_at else None,
         "report": analysis.report,
+        "rights_analysis": analysis.rights_analysis,
+        "market_data": analysis.market_data,
+        "news_analysis": analysis.news_analysis,
+        "valuation": analysis.valuation,
     }
 
 

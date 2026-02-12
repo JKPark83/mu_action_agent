@@ -10,12 +10,12 @@ export interface StageProgress {
 export interface AnalysisProgress {
   overall: number
   stages: {
-    document_parsing: StageProgress
+    parsed_documents: StageProgress
     rights_analysis: StageProgress
     market_data: StageProgress
     news_analysis: StageProgress
     valuation: StageProgress
-    report_generation: StageProgress
+    report: StageProgress
   }
 }
 
