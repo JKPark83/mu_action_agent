@@ -31,13 +31,23 @@ export interface Analysis {
 
 export interface AnalysisDetail extends Analysis {
   report: AnalysisReport | null
+  rights_analysis: Record<string, unknown> | null
+  market_data: Record<string, unknown> | null
+  news_analysis: Record<string, unknown> | null
+  valuation: Record<string, unknown> | null
 }
 
 export interface AnalysisReport {
   recommendation: Recommendation
+  reasoning: string
+  risk_summary: string
   bid_price: { conservative: number; moderate: number; aggressive: number }
   sale_price: { conservative: number; moderate: number; aggressive: number }
   expected_roi: number
-  risk_summary: string
-  reasoning: string
+  cost_breakdown?: Record<string, number>
+  confidence_score?: number
+  disclaimer?: string
+  chart_data?: {
+    price_trend?: { date: string; price: number }[]
+  }
 }
