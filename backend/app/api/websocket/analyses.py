@@ -1,4 +1,8 @@
+"""WebSocket endpoint for real-time analysis progress."""
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from app.api.websocket.manager import manager
 
 router = APIRouter()
 
@@ -6,11 +10,9 @@ router = APIRouter()
 @router.websocket("/ws/analyses/{analysis_id}")
 async def analysis_progress(websocket: WebSocket, analysis_id: str) -> None:
     """분석 진행 상황을 실시간으로 전달합니다."""
-    await websocket.accept()
+    await manager.connect(analysis_id, websocket)
     try:
-        # TODO: 실제 분석 진행 상황 구독 로직 구현
         while True:
-            data = await websocket.receive_text()
-            await websocket.send_json({"analysis_id": analysis_id, "message": data})
+            await websocket.receive_text()  # keep-alive
     except WebSocketDisconnect:
-        pass
+        manager.disconnect(analysis_id, websocket)
