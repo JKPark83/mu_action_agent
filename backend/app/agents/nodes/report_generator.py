@@ -75,38 +75,50 @@ async def report_generator_node(state: AgentState) -> AgentState:
         raw = await _call_llm(prompt, max_tokens=3000)
         analysis_summary = _parse_json_response(raw)
 
-        # 최종 리포트 조합
+        # 최종 리포트 조합: 프론트엔드가 기대하는 구조에 맞춰 생성
+        # 프론트엔드 AnalysisReport 타입:
+        #   recommendation, reasoning, risk_summary,
+        #   bid_price, sale_price, expected_roi,
+        #   cost_breakdown, confidence_score, disclaimer, chart_data
         report: dict = {
             "analysis_summary": analysis_summary,
         }
 
-        # 가치평가 결과 포함
+        # 가치평가 결과를 report 최상위 레벨로 플래튼
         if state.valuation:
             try:
-                report["valuation"] = asdict(state.valuation)
+                val = asdict(state.valuation)
+                report["recommendation"] = val.get("recommendation", "hold")
+                report["reasoning"] = val.get("reasoning", "")
+                report["risk_summary"] = val.get("risk_summary", "")
+                report["bid_price"] = val.get("bid_price", {})
+                report["sale_price"] = val.get("sale_price", {})
+                report["expected_roi"] = val.get("expected_roi", 0)
+                report["cost_breakdown"] = val.get("cost_breakdown", {})
+                report["confidence_score"] = val.get("confidence_score", 0)
+                report["valuation"] = val
             except Exception:
                 pass
 
-        # 권리분석 결과 포함
-        if state.rights_analysis:
-            try:
-                report["rights_analysis"] = asdict(state.rights_analysis)
-            except Exception:
-                pass
-
-        # 시장 데이터 포함
+        # 시세 차트 데이터 (시장 데이터에서 추출)
         if state.market_data:
             try:
-                report["market_data"] = asdict(state.market_data)
+                md = asdict(state.market_data)
+                chart_data: dict = {}
+                if md.get("recent_transactions"):
+                    chart_data["price_trend"] = [
+                        {"date": t.get("date", ""), "price": t.get("price", 0)}
+                        for t in md["recent_transactions"][:20]
+                    ]
+                report["chart_data"] = chart_data
             except Exception:
                 pass
 
-        # 뉴스 분석 포함
-        if state.news_analysis:
-            try:
-                report["news_analysis"] = asdict(state.news_analysis)
-            except Exception:
-                pass
+        # 면책 조항
+        report["disclaimer"] = (
+            "본 분석은 AI가 생성한 참고 자료이며, 실제 투자 결정 시 "
+            "법률·세무 전문가의 자문을 별도로 받으시기 바랍니다."
+        )
 
         logger.info("보고서 생성 완료")
         state.report = report

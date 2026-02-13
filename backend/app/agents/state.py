@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from app.schemas.document import RegistryExtraction, AppraisalExtraction, SaleItemExtraction
+from app.schemas.document import RegistryExtraction, AppraisalExtraction, SaleItemExtraction, StatusReportExtraction
 from app.schemas.market import MarketDataResult
 from app.schemas.news import NewsAnalysisResult
 from app.schemas.rights import RightsAnalysisResult
@@ -21,6 +21,7 @@ class AgentState:
     registry: RegistryExtraction | None = None
     appraisal: AppraisalExtraction | None = None
     sale_item: SaleItemExtraction | None = None
+    status_report: StatusReportExtraction | None = None
 
     # 분석 결과
     rights_analysis: RightsAnalysisResult | None = None

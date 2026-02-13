@@ -97,13 +97,7 @@ async def run_analysis_workflow(
     6. DB에 결과 저장 + 상태를 done/error로 업데이트
     7. WebSocket 완료 알림
     """
-    # 초기 상태
-    state = AgentState(
-        analysis_id=analysis_id,
-        file_paths=file_paths or [],
-    )
-
-    # DB: status → running
+    # DB: status → running, 파일 경로 조회
     async with async_session() as db:
         analysis = await db.get(Analysis, analysis_id)
         if analysis is None:
@@ -112,6 +106,39 @@ async def run_analysis_workflow(
         analysis.status = AnalysisStatus.RUNNING
         analysis.started_at = datetime.now(timezone.utc)
         await db.commit()
+
+        # file_paths가 없으면 DB에서 업로드된 파일 경로를 조회
+        if not file_paths:
+            from sqlalchemy import select
+            from app.models.file import UploadedFile
+
+            result = await db.execute(
+                select(UploadedFile.stored_path).where(
+                    UploadedFile.analysis_id == analysis_id
+                )
+            )
+            file_paths = [row[0] for row in result.all()]
+
+    if not file_paths:
+        logger.error("분석할 파일이 없습니다: %s", analysis_id)
+        async with async_session() as db:
+            analysis = await db.get(Analysis, analysis_id)
+            if analysis:
+                analysis.status = AnalysisStatus.ERROR
+                analysis.completed_at = datetime.now(timezone.utc)
+                analysis.errors = ["분석할 PDF 파일이 없습니다."]
+                await db.commit()
+        await manager.send_progress(analysis_id, {
+            "type": "analysis_error",
+            "error": "분석할 PDF 파일이 없습니다.",
+        })
+        return
+
+    # 초기 상태
+    state = AgentState(
+        analysis_id=analysis_id,
+        file_paths=file_paths,
+    )
 
     await _send_progress(analysis_id, "document_parser", "running", 0)
 
@@ -149,14 +176,23 @@ async def run_analysis_workflow(
         await _send_progress(analysis_id, "report_generator", "done", 100)
 
         # DB: 결과 저장
-        has_errors = bool(state.errors)
         final_status = AnalysisStatus.DONE if state.report else AnalysisStatus.ERROR
+
+        # parsed_documents 조합
+        parsed_docs: dict = {}
+        if state.registry:
+            parsed_docs["registry"] = _to_json(state.registry)
+        if state.appraisal:
+            parsed_docs["appraisal"] = _to_json(state.appraisal)
+        if state.sale_item:
+            parsed_docs["sale_item"] = _to_json(state.sale_item)
 
         async with async_session() as db:
             analysis = await db.get(Analysis, analysis_id)
             if analysis:
                 analysis.status = final_status
                 analysis.completed_at = datetime.now(timezone.utc)
+                analysis.parsed_documents = parsed_docs if parsed_docs else None
                 analysis.report = state.report
                 analysis.rights_analysis = _to_json(state.rights_analysis)
                 analysis.market_data = _to_json(state.market_data)

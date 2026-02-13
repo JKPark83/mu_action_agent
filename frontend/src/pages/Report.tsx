@@ -38,19 +38,37 @@ export default function Report() {
 
   if (!report) return <ErrorMessage message="분석이 아직 완료되지 않았습니다." />
 
+  if ('error' in report && !report.recommendation) {
+    return <ErrorMessage message={`분석 중 오류가 발생했습니다: ${report.error}`} />
+  }
+
+  // analysis_summary에서 전체 의견 추출 (partial report 대비)
+  const summary = (report as Record<string, unknown>).analysis_summary as Record<string, string> | undefined
+  const hasValuation = !!report.recommendation
+
   return (
     <div className="max-w-4xl mx-auto py-8 px-4 space-y-6">
       <h1 className="text-2xl font-bold text-gray-900">분석 리포트</h1>
 
       {/* 추천 카드 + 가격 분석 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <RecommendationCard
-          recommendation={report.recommendation}
-          reasoning={report.reasoning}
-          confidenceScore={report.confidence_score}
-        />
-        <PriceRangeCard bidPrice={report.bid_price} salePrice={report.sale_price} />
-      </div>
+      {hasValuation ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <RecommendationCard
+            recommendation={report.recommendation}
+            reasoning={report.reasoning}
+            confidenceScore={report.confidence_score}
+          />
+          <PriceRangeCard bidPrice={report.bid_price} salePrice={report.sale_price} />
+        </div>
+      ) : (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-yellow-800 mb-2">부분 분석 완료</h3>
+          <p className="text-sm text-yellow-700">
+            {summary?.overall_opinion
+              ?? '일부 분석 데이터가 부족합니다. 등기부등본, 감정평가서 등을 추가로 업로드하면 전체 분석을 받을 수 있습니다.'}
+          </p>
+        </div>
+      )}
 
       {/* 시세 차트 */}
       <PriceChart data={report.chart_data?.price_trend ?? []} />

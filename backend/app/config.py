@@ -1,8 +1,15 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+# .env 파일 탐색: backend/.env → 프로젝트 루트/.env
+_backend_dir = Path(__file__).resolve().parent.parent
+_env_candidates = [_backend_dir / ".env", _backend_dir.parent / ".env"]
+_env_file = next((p for p in _env_candidates if p.exists()), ".env")
 
 
 class Settings(BaseSettings):
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": str(_env_file), "env_file_encoding": "utf-8"}
 
     # Application
     app_env: str = "development"
