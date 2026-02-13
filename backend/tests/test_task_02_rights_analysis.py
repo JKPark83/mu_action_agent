@@ -12,12 +12,14 @@ import pytest
 
 from app.agents.nodes.rights_analysis import (
     analyze_tenants,
+    calculate_dividend_ranking,
     classify_rights,
     determine_extinguishment_basis,
     rights_analysis_node,
 )
 from app.agents.state import AgentState
 from app.schemas.document import OccupancyInfo, RegistryExtraction, RightEntry
+from app.schemas.rights import TenantAnalysis
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +170,7 @@ def test_tenant_with_opposition():
     assert len(tenants) == 1
     assert tenants[0].has_opposition_right is True
     assert tenants[0].deposit == 100_000_000
+    assert tenants[0].move_in_date == "2019-01-01"
 
 
 # ---------------------------------------------------------------------------
@@ -207,3 +210,130 @@ async def test_rights_analysis_node_no_registry():
     assert result.rights_analysis is None
     assert len(result.errors) == 1
     assert "등기부등본" in result.errors[0]
+
+
+# ---------------------------------------------------------------------------
+# T-8: 확정일자/배당신청 정보 전달
+# ---------------------------------------------------------------------------
+
+
+def test_tenant_confirmed_date_and_dividend():
+    """확정일자와 배당신청 정보가 TenantAnalysis에 정상 전달된다."""
+    occ = OccupancyInfo(
+        occupant_name="김철수",
+        occupant_type="임차인",
+        deposit=100_000_000,
+        monthly_rent=0,
+        move_in_date="2019-01-01",
+        confirmed_date="2019-01-15",
+        dividend_applied=True,
+    )
+
+    tenants = analyze_tenants([occ], "2020-02-01")
+
+    assert len(tenants) == 1
+    assert tenants[0].confirmed_date == "2019-01-15"
+    assert tenants[0].dividend_applied is True
+    assert tenants[0].move_in_date == "2019-01-01"
+
+
+# ---------------------------------------------------------------------------
+# T-9: 배당순위 계산 (확정일 기준 정렬)
+# ---------------------------------------------------------------------------
+
+
+def test_dividend_ranking_by_confirmed_date(
+    mortgage_entry: RightEntry, seizure_entry: RightEntry
+):
+    """확정일 기준으로 권리 설정일 사이에서 배당순위가 결정된다.
+
+    근저당(2020-02-01) < 가압류(2023-05-10)
+    임차인A 확정일(2019-06-01) → 근저당보다 선순위 = 1순위
+    임차인B 확정일(2021-03-01) → 근저당 이후, 가압류 이전 = 3순위
+    """
+    tenant_a = TenantAnalysis(
+        name="임차인A",
+        deposit=50_000_000,
+        has_opposition_right=True,
+        has_priority_repayment=False,
+        confirmed_date="2019-06-01",
+        dividend_applied=True,
+    )
+    tenant_b = TenantAnalysis(
+        name="임차인B",
+        deposit=30_000_000,
+        has_opposition_right=False,
+        has_priority_repayment=False,
+        confirmed_date="2021-03-01",
+        dividend_applied=True,
+    )
+
+    ranks = calculate_dividend_ranking(
+        [mortgage_entry, seizure_entry], [tenant_a, tenant_b]
+    )
+
+    assert ranks["임차인A"] == 1  # 근저당(2순위) 이전
+    assert ranks["임차인B"] == 3  # 근저당(2순위) 이후, 가압류(4순위) 이전
+
+
+# ---------------------------------------------------------------------------
+# T-10: 배당 미신청 임차인은 순위 제외
+# ---------------------------------------------------------------------------
+
+
+def test_dividend_ranking_excludes_non_applicants(mortgage_entry: RightEntry):
+    """배당신청하지 않은 임차인은 배당순위에 포함되지 않는다."""
+    tenant_no_apply = TenantAnalysis(
+        name="미신청자",
+        deposit=50_000_000,
+        has_opposition_right=True,
+        has_priority_repayment=False,
+        confirmed_date="2019-06-01",
+        dividend_applied=False,  # 배당 미신청
+    )
+
+    ranks = calculate_dividend_ranking([mortgage_entry], [tenant_no_apply])
+
+    assert "미신청자" not in ranks
+
+
+# ---------------------------------------------------------------------------
+# T-11: 확정일 없는 임차인은 배당 불가
+# ---------------------------------------------------------------------------
+
+
+def test_dividend_ranking_excludes_no_confirmed_date(mortgage_entry: RightEntry):
+    """확정일자가 없는 임차인은 배당순위에 포함되지 않는다."""
+    tenant_no_date = TenantAnalysis(
+        name="확정일미상",
+        deposit=50_000_000,
+        has_opposition_right=True,
+        has_priority_repayment=False,
+        confirmed_date=None,
+        dividend_applied=True,
+    )
+
+    ranks = calculate_dividend_ranking([mortgage_entry], [tenant_no_date])
+
+    assert "확정일미상" not in ranks
+
+
+# ---------------------------------------------------------------------------
+# T-12: 소액임차인 최우선변제 (배당순위 0)
+# ---------------------------------------------------------------------------
+
+
+def test_dividend_ranking_small_deposit_priority(mortgage_entry: RightEntry):
+    """소액임차인(우선변제권 있음)이 배당신청하면 최우선변제(순위 0)로 표기."""
+    tenant_small = TenantAnalysis(
+        name="소액임차인",
+        deposit=50_000_000,
+        has_opposition_right=True,
+        has_priority_repayment=True,  # 소액임차인 우선변제권
+        confirmed_date="2021-03-01",  # 근저당(2020-02-01) 이후
+        dividend_applied=True,
+    )
+
+    ranks = calculate_dividend_ranking([mortgage_entry], [tenant_small])
+
+    assert ranks["소액임차인"] == 0  # 최우선변제

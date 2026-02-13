@@ -18,6 +18,10 @@ class TenantAnalysis:
     deposit: int
     has_opposition_right: bool  # 대항력
     has_priority_repayment: bool  # 우선변제권
+    move_in_date: str | None = None  # 전입일
+    confirmed_date: str | None = None  # 확정일자
+    dividend_applied: bool = False  # 배당신청 여부
+    dividend_ranking: int | None = None  # 배당순위 (0=최우선변제, 1~N=일반순위, None=배당불가)
     expected_dividend: int | None = None
 
 
@@ -31,5 +35,6 @@ class RightsAnalysisResult:
     tenants: list[TenantAnalysis] = field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.MEDIUM
     risk_factors: list[str] = field(default_factory=list)
-    total_assumed_amount: int = 0
+    total_assumed_amount: int = 0  # 인수할 권리 총액 (선순위 권리)
+    total_assumed_deposit: int = 0  # 대항력 있는 임차인 보증금 합계
     confidence_score: float = 0.0

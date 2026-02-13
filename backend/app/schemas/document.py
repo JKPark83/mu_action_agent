@@ -46,6 +46,8 @@ class OccupancyInfo:
     deposit: int | None = None
     monthly_rent: int | None = None
     move_in_date: str | None = None
+    confirmed_date: str | None = None  # 확정일자 (YYYY-MM-DD)
+    dividend_applied: bool = False  # 배당신청 여부
 
 
 @dataclass(frozen=True)

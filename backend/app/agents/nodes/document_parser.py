@@ -39,18 +39,31 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
+def _fix_json(text: str) -> str:
+    """LLM이 생성한 JSON의 흔한 오류를 수정한다."""
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
+def _try_parse(raw: str) -> dict:
+    """JSON 파싱을 시도하고, 실패하면 흔한 오류를 수정 후 재시도한다."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(_fix_json(raw))
+
+
 def _parse_json_response(text: str) -> dict:
     """LLM 응답에서 JSON을 추출한다."""
     # 1. ```json ... ``` 블록
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
-        return json.loads(match.group(1).strip())
+        return _try_parse(match.group(1).strip())
     # 2. 텍스트 내 첫 번째 { ... } 블록
     match = re.search(r"\{[\s\S]*\}", text)
     if match:
-        return json.loads(match.group(0))
+        return _try_parse(match.group(0))
     # 3. 전체가 JSON
-    return json.loads(text.strip())
+    return _try_parse(text.strip())
 
 
 async def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
@@ -160,6 +173,8 @@ async def extract_sale_item_data(text: str) -> SaleItemExtraction:
             deposit=o.get("deposit"),
             monthly_rent=o.get("monthly_rent"),
             move_in_date=o.get("move_in_date"),
+            confirmed_date=o.get("confirmed_date"),
+            dividend_applied=bool(o.get("dividend_applied", False)),
         )
         for o in data.get("occupancy_info", [])
     ]

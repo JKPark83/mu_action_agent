@@ -74,6 +74,7 @@ backend/
 │   ├── main.py                     # FastAPI 앱 초기화, CORS, 라우터 등록
 │   ├── config.py                   # pydantic-settings 기반 환경 설정
 │   ├── database.py                 # SQLAlchemy 비동기 엔진/세션 설정
+│   ├── migrations.py               # SQLite 경량 마이그레이션 + 데이터 백필
 │   ├── api/
 │   │   ├── router.py               # API 라우터 통합 (/api/v1)
 │   │   ├── deps.py                 # 의존성 (get_db 세션)
@@ -124,11 +125,22 @@ backend/
 | Method | Path | 설명 | 요청 | 응답 |
 |--------|------|------|------|------|
 | `POST` | `/api/v1/analyses` | 분석 생성 + 워크플로우 시작 | `multipart/form-data`: files(PDF[]), description?, case_number? | `{id, status}` (201) |
-| `GET` | `/api/v1/analyses` | 분석 목록 조회 | - | `[{id, status, description, case_number, created_at}]` |
-| `GET` | `/api/v1/analyses/{id}` | 분석 상세 조회 | - | `{id, status, description, case_number, created_at, started_at, completed_at, report, rights_analysis, market_data, news_analysis, valuation}` |
+| `GET` | `/api/v1/analyses` | 분석 목록 조회 (검색/정렬/필터) | query: search?, sort_by?, sort_order?, favorites_only?, status? | `[{id, status, description, case_number, created_at, is_favorite, property_address, property_name, property_type, area, appraised_value, recommendation, expected_roi, confidence_score}]` |
+| `GET` | `/api/v1/analyses/{id}` | 분석 상세 조회 | - | `{id, status, description, case_number, created_at, started_at, completed_at, is_favorite, property_address, property_name, property_type, area, appraised_value, recommendation, expected_roi, confidence_score, report, rights_analysis, market_data, news_analysis, valuation}` |
 | `GET` | `/api/v1/analyses/{id}/status` | 분석 진행 상태 조회 | - | `{id, status, progress: {overall, stages}, started_at}` |
 | `GET` | `/api/v1/analyses/{id}/report` | 완료된 리포트 조회 | - | report JSON (done 상태일 때만) |
+| `PATCH` | `/api/v1/analyses/{id}/favorite` | 즐겨찾기 토글 | - | `{id, is_favorite}` |
 | `DELETE` | `/api/v1/analyses/{id}` | 분석 삭제 | - | `{detail: "삭제되었습니다."}` |
+
+#### 분석 목록 조회 쿼리 파라미터
+
+| 파라미터 | 타입 | 설명 | 기본값 |
+|----------|------|------|--------|
+| `search` | `string?` | 사건번호, 물건명, 주소, 설명에서 검색 (ILIKE) | - |
+| `sort_by` | `string?` | 정렬 기준: `created_at`, `recommendation`, `expected_roi`, `appraised_value` | `created_at` |
+| `sort_order` | `string?` | 정렬 방향: `asc`, `desc` | `desc` |
+| `favorites_only` | `bool?` | `true`이면 즐겨찾기 항목만 반환 | `false` |
+| `status` | `string?` | 상태 필터: `pending`, `running`, `done`, `error` | - |
 
 ### 파일(Files) API — `/api/v1/files`
 
@@ -161,6 +173,15 @@ backend/
 | `status` | `Enum` | `pending` / `running` / `done` / `error` |
 | `description` | `String?` | 분석 설명 |
 | `case_number` | `String?` | 사건번호 |
+| `is_favorite` | `Boolean` | 즐겨찾기 여부 (기본: false) |
+| `property_address` | `String?` | 물건 주소 (등기부등본에서 추출) |
+| `property_name` | `String?` | 건물/단지명 (등기부등본에서 추출) |
+| `property_type` | `String?` | 부동산 유형 (아파트/다세대/오피스텔 등) |
+| `area` | `Float?` | 전용면적 (㎡) |
+| `appraised_value` | `Integer?` | 감정가 (원) |
+| `recommendation` | `String?` | 추천등급 (recommend/hold/not_recommend) |
+| `expected_roi` | `Float?` | 예상수익률 (%) |
+| `confidence_score` | `Float?` | 분석 신뢰도 (0.0~1.0) |
 | `created_at` | `DateTime` | 생성 시각 (UTC) |
 | `started_at` | `DateTime?` | 분석 시작 시각 |
 | `completed_at` | `DateTime?` | 분석 완료 시각 |
@@ -171,6 +192,14 @@ backend/
 | `valuation` | `JSON?` | 가치평가 결과 |
 | `report` | `JSON?` | 최종 리포트 |
 | `errors` | `JSON?` | 에러 로그 |
+
+> **요약 필드 자동 추출**: `is_favorite`을 제외한 요약 필드(`property_address`, `property_name`, `property_type`, `area`, `appraised_value`, `recommendation`, `expected_roi`, `confidence_score`)는 분석 완료 시 `parsed_documents`와 `report` JSON에서 자동 추출되어 저장됩니다. 대시보드 목록 조회 시 JSON 파싱 없이 빠르게 표시할 수 있습니다.
+
+### 데이터베이스 마이그레이션
+
+- Alembic 미사용, SQLite `ALTER TABLE ADD COLUMN` 기반 경량 마이그레이션
+- 앱 시작 시 (`lifespan`) 테이블 생성 후 마이그레이션 자동 실행
+- 기존 완료 분석의 요약 필드 백필 (한 번만 실행, 멱등성 보장)
 
 ### UploadedFile (업로드 파일)
 
@@ -304,6 +333,8 @@ backend/
 | `deposit` | `int?` | 보증금 (원) |
 | `monthly_rent` | `int?` | 월세 (원) |
 | `move_in_date` | `str?` | 전입일 (YYYY-MM-DD) |
+| `confirmed_date` | `str?` | 확정일자 (YYYY-MM-DD) |
+| `dividend_applied` | `bool` | 배당신청 여부 (기본: false) |
 
 ##### StatusReportExtraction (현황조사보고서)
 | 필드 | 타입 | 설명 |
@@ -736,7 +767,43 @@ ROI = (매도적정가 - 총투자비) / 총투자비 × 100
 - `assumed_rights`: 법원이 명시한 인수해야 할 권리 목록
 - `special_conditions`: 특별매각조건 (해당 시)
 
-### 2.4.3 말소기준권리 기준의 하자 파악 기준
+### 2.4.3 배당분석
+
+#### 배당 자격 요건
+
+임차인이 매각대금에서 배당을 받으려면 **두 가지 조건**을 모두 충족해야 합니다:
+
+1. **확정일자**: 확정일자를 받아야 함 (`confirmed_date` 존재)
+2. **배당신청**: 배당요구종기까지 배당신청을 해야 함 (`dividend_applied = true`)
+
+#### 배당순위 결정 기준
+
+배당순위는 임차인의 **확정일자**를 기존 권리들의 **설정일**과 비교하여 시간순으로 정렬하여 결정합니다.
+
+**계산 로직**:
+1. 모든 권리(갑구+을구, 소유권이전/보존 제외)의 설정일을 수집
+2. 배당 자격 있는 임차인(확정일자 있음 + 배당신청함)의 확정일을 수집
+3. 날짜순으로 통합 정렬하여 순위 부여 (1부터 시작)
+4. **소액임차인 최우선변제**: 우선변제권 있는 임차인(대항력 + 소액보증금)이 배당신청 시 → **배당순위 0** (최우선)
+
+**배당순위 예시**:
+
+| 항목 | 날짜 | 순위 |
+|------|------|------|
+| 소액임차인A (확정일, 배당신청O, 우선변제권) | 2021-03-01 | **0 (최우선)** |
+| 임차인B (확정일, 배당신청O) | 2019-06-01 | 1 |
+| 근저당권 (설정일) | 2020-01-01 | 2 |
+| 임차인C (확정일, 배당신청O) | 2021-03-01 | 3 |
+| 가압류 (설정일) | 2022-05-01 | 4 |
+| 임차인D (확정일 없음 또는 배당미신청) | - | **순위 없음** |
+
+#### 대항력 있는 임차인 인수 보증금
+
+낙찰자가 인수해야 하는 보증금 총액:
+- 대항력 있는 임차인(`has_opposition_right = true`)의 보증금 합계
+- `total_assumed_deposit` 필드로 산출
+
+### 2.4.4 말소기준권리 기준의 하자 파악 기준
 
 #### 종합 위험도 결정 흐름
 
@@ -752,13 +819,34 @@ ROI = (매도적정가 - 총투자비) / 총투자비 × 100
        │
 3. 임차인 분석 (규칙 기반)
    ├── 대항력 보유 여부 판정
-   └── 우선변제권 보유 여부 판정
+   ├── 우선변제권 보유 여부 판정
+   └── 확정일자/배당신청 정보 수집
        │
-4. Claude AI 종합 평가
+4. 배당분석 (규칙 기반)
+   ├── 배당 자격 판정 (확정일 + 배당신청)
+   ├── 배당순위 계산 (확정일 vs 권리 설정일 시간순)
+   ├── 소액임차인 최우선변제 처리
+   └── 대항력 임차인 인수 보증금 합계 산출
+       │
+5. Claude AI 종합 평가
    ├── 특수 권리 위험 탐지
    ├── 전체 위험도 판정 (high/medium/low)
    └── 구체적 위험 요인 + 경고사항 생성
 ```
+
+#### TenantAnalysis 출력 구조
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `name` | `str` | 임차인명 |
+| `deposit` | `int` | 보증금 (원) |
+| `has_opposition_right` | `bool` | 대항력 여부 |
+| `has_priority_repayment` | `bool` | 우선변제권 여부 (소액임차인) |
+| `move_in_date` | `str?` | 전입일 (YYYY-MM-DD) |
+| `confirmed_date` | `str?` | 확정일자 (YYYY-MM-DD) |
+| `dividend_applied` | `bool` | 배당신청 여부 |
+| `dividend_ranking` | `int?` | 배당순위 (0=최우선변제, 1~N=일반순위, null=배당불가) |
+| `expected_dividend` | `int?` | 예상 배당금 (원) |
 
 #### RightsAnalysisResult 출력 구조
 
@@ -770,7 +858,8 @@ ROI = (매도적정가 - 총투자비) / 총투자비 × 100
 | `tenants` | `list[TenantAnalysis]` | 임차인 분석 결과 |
 | `risk_level` | `RiskLevel` | 위험도 (HIGH/MEDIUM/LOW) |
 | `risk_factors` | `list[str]` | 위험 요인 + 경고사항 |
-| `total_assumed_amount` | `int` | 인수 총액 (원) |
+| `total_assumed_amount` | `int` | 인수할 권리 총액 (원, 선순위 권리) |
+| `total_assumed_deposit` | `int` | 대항력 있는 임차인 보증금 합계 (원) |
 | `confidence_score` | `float` | 분석 신뢰도 |
 
 ## 2.5 뉴스/시장동향 분석
@@ -913,14 +1002,38 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 
 | 경로 | 컴포넌트 | 설명 |
 |------|----------|------|
-| `/` | `Home` | 홈 - 파일 업로드 + 분석 시작 |
+| `/` | `Dashboard` | 대시보드 - 분석 리포트 카드 목록 + 검색/정렬/즐겨찾기 |
+| `/new` | `NewAnalysis` | 신규 분석 - 파일 업로드 + 분석 시작 |
 | `/analysis/:id` | `AnalysisProgress` | 분석 진행 상황 (실시간) |
 | `/report/:id` | `Report` | 분석 리포트 (탭 기반) |
-| `/history` | `History` | 분석 이력 목록 |
 
 ### 페이지별 상세
 
-#### Home (홈 페이지)
+#### Dashboard (대시보드, 메인 페이지)
+
+- **카드형 그리드 레이아웃**: 분석 완료된 리포트를 카드 형태로 표시
+- **검색**: 사건번호, 물건명, 주소, 설명에서 텍스트 검색 (300ms 디바운스)
+- **정렬**: 최신순 / 수익률 높은순 / 수익률 낮은순 / 감정가 높은순 / 추천순
+- **즐겨찾기 필터**: 즐겨찾기한 항목만 필터링
+- **반응형 그리드**: 1열(모바일) / 2열(태블릿) / 3열(데스크톱)
+- 빈 상태: "아직 분석 이력이 없습니다." + 새 분석 시작 링크
+
+**카드 표시 정보**:
+| 항목 | 설명 |
+|------|------|
+| 추천 뱃지 | 추천(초록) / 보류(노랑) / 비추천(빨강) |
+| 즐겨찾기 별 | 클릭 시 토글, 즐겨찾기 시 노란 별 |
+| 사건번호 | `case_number` |
+| 물건명 | `property_name` (없으면 `property_address`) |
+| 부동산 유형 + 면적 | 예: "아파트 \| 84.5㎡" |
+| 감정가 | 한국식 금액 표시 (예: 5억 2,000만원) |
+| 예상 수익률 | 초록(양수) / 빨강(음수) |
+| 상태 뱃지 | 분석 미완료 시 표시 (대기중/분석중/오류) |
+| 생성일 | 한국식 날짜 표시 |
+
+**카드 클릭 동작**: 완료 → `/report/:id`, 미완료 → `/analysis/:id`
+
+#### NewAnalysis (신규 분석)
 
 - **파일 드래그 앤 드롭 업로드** (PDF만 허용)
 - **사건번호** 및 **설명** 입력 필드 (선택)
@@ -944,18 +1057,12 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 | 탭 | 컴포넌트 | 내용 |
 |----|----------|------|
 | 개요 | `RecommendationCard` + `PriceRangeCard` + `PriceChart` | 추천/가격/차트 |
-| 권리분석 | `RightsAnalysisTab` | 말소기준/인수권리/임차인 |
+| 권리분석 | `RightsAnalysisTab` | 말소기준/인수권리/임차인/배당분석 |
 | 시세분석 | `MarketDataTab` | 거래내역/전월세 |
 | 비용분석 | `CostBreakdownTab` | 비용 상세 |
 | 뉴스 | `NewsTab` | 뉴스/동향 |
 
 상단에 **면책 배너** (`DisclaimerBanner`) 항상 표시.
-
-#### History (분석 이력)
-
-- 과거 분석 작업 목록 (최신순)
-- 각 항목: ID, 상태 뱃지, 설명, 사건번호, 생성일
-- 클릭 시 해당 리포트 페이지로 이동
 
 ## 3.3 컴포넌트 구조
 
@@ -966,6 +1073,14 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 | `UploadForm` | 전체 업로드 폼 (파일 드랍존 + 파일 목록 + 입력 필드 + 제출 버튼) |
 | `FileDropzone` | 드래그 앤 드롭 영역 (PDF 허용, 클릭 또는 드래그로 파일 선택) |
 | `FileList` | 업로드 대기 파일 목록 (파일명, 크기 표시, 삭제 기능) |
+
+### 대시보드 관련
+
+| 컴포넌트 | Props | 설명 |
+|----------|-------|------|
+| `AnalysisCard` | `analysis`, `onToggleFavorite` | 분석 요약 카드 (추천뱃지, 즐겨찾기, 물건정보, 수익률) |
+| `SearchBar` | `value`, `onChange` | 검색 입력 필드 (돋보기 아이콘) |
+| `SortDropdown` | `value`, `onChange` | 정렬 선택 드롭다운 (최신순/수익률/감정가/추천순) |
 
 ### 분석 관련
 
@@ -980,7 +1095,7 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 | `RecommendationCard` | `recommendation`, `reasoning`, `confidenceScore?` | 투자 추천 뱃지 (추천/보류/비추천) + 사유 + 신뢰도 바 |
 | `PriceRangeCard` | `bidPrice`, `salePrice`, `minimumSalePrice?` | 입찰적정가 3단계 + 매도적정가 3단계 + 최저매각가격 |
 | `PriceChart` | `chartData`, `appraisedValue?` | 시세 추이 라인차트 (Recharts) + 감정가 기준선 (점선) |
-| `RightsAnalysisTab` | `data` | 말소기준권리, 위험도 뱃지, 인수/소멸 권리 목록, 임차인 테이블, 위험요인 |
+| `RightsAnalysisTab` | `data` | 말소기준권리, 위험도 뱃지, 인수/소멸 권리 목록, 임차인 테이블(전입일/확정일/대항력/배당신청/배당순위), 대항력 임차인 인수보증금 합계, 위험요인 |
 | `MarketDataTab` | `data` | 거래 내역 테이블, 시세 통계 |
 | `CostBreakdownTab` | `data` | 비용 항목별 상세 표 |
 | `NewsTab` | `data` | 뉴스 목록, 감성 뱃지, 호재/악재 요인 |
@@ -990,7 +1105,7 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 
 | 컴포넌트 | 설명 |
 |----------|------|
-| `Header` | 상단 네비게이션 바 (AuctionAI 로고 + 홈/분석이력 링크) |
+| `Header` | 상단 네비게이션 바 (AuctionAI 로고 + 대시보드/새 분석 링크) |
 | `LoadingSkeleton` | 로딩 스켈레톤 UI |
 | `Spinner` | 로딩 스피너 (SVG 애니메이션) |
 | `ErrorMessage` | 에러 메시지 표시 (아이콘 + 텍스트) |
@@ -1033,8 +1148,9 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 #### useAnalysis
 
 - TanStack React Query 기반 데이터 페칭
-- 분석 목록 조회, 상세 조회, 리포트 조회
-- 분석 생성 mutation
+- `useAnalysisList(params?)`: 분석 목록 조회 (검색/정렬/필터 파라미터 지원, queryKey에 params 포함)
+- `useAnalysisDetail(id)`: 분석 상세 조회
+- `useToggleFavorite()`: 즐겨찾기 토글 뮤테이션 (낙관적 업데이트 적용)
 
 #### useWebSocket
 
@@ -1061,6 +1177,34 @@ Claude AI가 모든 분석 결과를 종합하여 7개 섹션의 자연어 요�
 type AnalysisStatus = 'pending' | 'running' | 'done' | 'error'
 type StageStatus = 'pending' | 'running' | 'done' | 'error'
 type Recommendation = 'recommend' | 'hold' | 'not_recommend'
+
+interface Analysis {
+  id: string
+  status: AnalysisStatus
+  description: string | null
+  case_number: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  // 대시보드 요약 필드
+  is_favorite: boolean
+  property_address: string | null
+  property_name: string | null
+  property_type: string | null
+  area: number | null
+  appraised_value: number | null
+  recommendation: Recommendation | null
+  expected_roi: number | null
+  confidence_score: number | null
+}
+
+interface AnalysisListParams {
+  search?: string
+  sort_by?: 'created_at' | 'recommendation' | 'expected_roi' | 'appraised_value'
+  sort_order?: 'asc' | 'desc'
+  favorites_only?: boolean
+  status?: AnalysisStatus
+}
 
 interface AnalysisProgress {
   overall: number
@@ -1096,7 +1240,7 @@ interface AnalysisReport {
 
 | 테스트 파일 | 대상 | 테스트 항목 수 | 주요 검증 내용 |
 |-------------|------|---------------|----------------|
-| `test_task_02_rights_analysis.py` | 권리분석 | 6 | 말소기준권리 판단, 인수/소멸 분류, 대항력/우선변제권, Claude 연동, 노드 전체 흐름 |
+| `test_task_02_rights_analysis.py` | 권리분석 | 12 | 말소기준권리 판단, 인수/소멸 분류, 대항력/우선변제권, 확정일자/배당신청 전달, 배당순위 계산(확정일 기준 정렬), 배당 미신청/확정일 없는 임차인 제외, 소액임차인 최우선변제, Claude 연동, 노드 전체 흐름 |
 | `test_task_03_market_data.py` | 시세분석 | 7 | 면적 필터링, 건물명 필터링, 시세추이 판단, 전월세 분석, API 연동, 노드 전체 흐름 |
 | `test_task_04_news_analysis.py` | 뉴스분석 | 5 | 키워드 생성, 중복 제거, Sentiment 파싱, Claude 분석 연동, 에러 처리 |
 | `test_task_05_valuation.py` | 가치평가 | 9 | 취득세 계산, 입찰가 3단계, ROI 산출, 추천 판정, 비용 합산, 노드 폴백 |
