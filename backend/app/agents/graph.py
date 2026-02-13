@@ -20,6 +20,7 @@ from app.agents.nodes.valuation import valuation_node
 from app.agents.state import AgentState
 from app.api.websocket.manager import manager
 from app.database import async_session
+from app.migrations import extract_summary_fields
 from app.models.analysis import Analysis, AnalysisStatus
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,7 @@ async def run_analysis_workflow(
                 analysis.news_analysis = _to_json(state.news_analysis)
                 analysis.valuation = _to_json(state.valuation)
                 analysis.errors = state.errors if state.errors else None
+                extract_summary_fields(analysis)
                 await db.commit()
 
         # WebSocket 완료 알림

@@ -235,14 +235,24 @@ async def valuation_node(state: AgentState) -> AgentState:
     registry = state.registry
 
     try:
-        # 추정 시세 결정 (시장 데이터 → 감정가 → 0 순서로 fallback)
-        if market and market.avg_price_per_pyeong > 0 and registry and registry.area:
-            area_pyeong = registry.area / 3.305785
+        # 면적 결정: registry → 시장 거래 데이터 평균 면적 순으로 fallback
+        target_area = (registry.area if registry else None) or 0.0
+        if target_area <= 0 and market and market.recent_transactions:
+            areas = [t.area for t in market.recent_transactions if t.area > 0]
+            if areas:
+                from statistics import mean
+                target_area = round(mean(areas), 2)
+                logger.info("면적 fallback: 시장 거래 평균 면적 %.1f㎡ 사용", target_area)
+
+        # 추정 시세 결정 (시장 데이터 → 감정가 순으로 fallback)
+        estimated_value = 0
+        if market and market.avg_price_per_pyeong > 0 and target_area > 0:
+            area_pyeong = target_area / 3.305785
             estimated_value = int(market.avg_price_per_pyeong * area_pyeong)
-        elif appraisal:
+        if estimated_value <= 0 and appraisal and appraisal.appraised_value > 0:
             estimated_value = appraisal.appraised_value
-        else:
-            errors.append("가치평가: 시세 추정 불가 (시장데이터·감정가 모두 없음)")
+        if estimated_value <= 0:
+            errors.append("가치평가: 시세 추정 불가 (시장데이터·감정가 모두 없음 또는 면적 정보 없음)")
             state.valuation = None
             state.errors = errors
             return state
@@ -294,12 +304,13 @@ async def valuation_node(state: AgentState) -> AgentState:
         reasoning_parts: list[str] = []
 
         # 추정시세 근거
-        if market and market.avg_price_per_pyeong > 0:
+        if market and market.avg_price_per_pyeong > 0 and target_area > 0:
+            area_source = "등기부" if (registry and registry.area and registry.area > 0) else "실거래 평균"
             reasoning_parts.append(
                 f"추정 시세: 최근 실거래 평균 평당가 {market.avg_price_per_pyeong:,}원 × "
-                f"{registry.area / 3.305785 if registry and registry.area else 0:.1f}평 = {estimated_value:,}원"
+                f"{target_area / 3.305785:.1f}평 ({area_source} 면적 {target_area:.1f}㎡) = {estimated_value:,}원"
             )
-        elif appraisal:
+        elif appraisal and appraisal.appraised_value > 0:
             reasoning_parts.append(
                 f"추정 시세: 감정가 {appraisal.appraised_value:,}원 기준 (실거래 데이터 없음)"
             )

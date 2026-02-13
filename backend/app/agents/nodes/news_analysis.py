@@ -31,18 +31,78 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
+def _fix_json(text: str) -> str:
+    """LLM이 생성한 JSON의 흔한 오류를 수정한다."""
+    # trailing comma 제거: ,} → } / ,] → ]
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text
+
+
+def _close_truncated_json(text: str) -> str:
+    """max_tokens로 잘린 JSON의 열린 괄호를 닫아준다."""
+    # 마지막 완전한 항목 이후의 불완전한 부분을 제거
+    # 마지막으로 완전한 }, 또는 ], 뒤를 자름
+    last_complete = max(text.rfind("},"), text.rfind("],"))
+    if last_complete > 0:
+        text = text[: last_complete + 1]
+
+    # 열린 괄호를 역순으로 닫아줌
+    open_brackets: list[str] = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            open_brackets.append(ch)
+        elif ch == "}" and open_brackets and open_brackets[-1] == "{":
+            open_brackets.pop()
+        elif ch == "]" and open_brackets and open_brackets[-1] == "[":
+            open_brackets.pop()
+
+    for bracket in reversed(open_brackets):
+        text += "]" if bracket == "[" else "}"
+
+    return text
+
+
+def _try_parse(raw: str) -> dict:
+    """JSON 파싱을 시도하고, 실패하면 다양한 복구를 시도한다."""
+    # 1차: 원본 그대로
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # 2차: trailing comma 수정
+    try:
+        return json.loads(_fix_json(raw))
+    except json.JSONDecodeError:
+        pass
+    # 3차: 잘린 JSON 복구 (max_tokens 초과 시)
+    return json.loads(_fix_json(_close_truncated_json(raw)))
+
+
 def _parse_json_response(text: str) -> dict:
     """LLM 응답에서 JSON을 추출한다."""
     # 1. ```json ... ``` 블록
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
-        return json.loads(match.group(1).strip())
+        return _try_parse(match.group(1).strip())
     # 2. 텍스트 내 첫 번째 { ... } 블록
     match = re.search(r"\{[\s\S]*\}", text)
     if match:
-        return json.loads(match.group(0))
+        return _try_parse(match.group(0))
     # 3. 전체가 JSON
-    return json.loads(text.strip())
+    return _try_parse(text.strip())
 
 
 async def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
@@ -53,7 +113,10 @@ async def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text
+    text = response.content[0].text
+    if response.stop_reason == "max_tokens":
+        logger.warning("LLM 응답이 max_tokens(%d)로 잘렸습니다. 잘린 JSON 복구를 시도합니다.", max_tokens)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +156,7 @@ async def analyze_news_with_claude(
     news_text = _format_news_for_prompt(news_items)
     prompt = NEWS_ANALYSIS_PROMPT.format(area=target_area, news_list=news_text)
 
-    raw = await _call_llm(prompt)
+    raw = await _call_llm(prompt, max_tokens=8192)
     return _parse_json_response(raw)
 
 
@@ -165,8 +228,8 @@ async def news_analysis_node(state: AgentState) -> AgentState:
             state.errors = errors
             return state
 
-        # Claude 분석 (최대 30건)
-        analysis = await analyze_news_with_claude(unique_news[:30], address)
+        # Claude 분석 (최대 15건 — 토큰 초과 방지)
+        analysis = await analyze_news_with_claude(unique_news[:15], address)
 
         # 개별 뉴스 → NewsItem 변환
         collected: list[NewsItem] = []

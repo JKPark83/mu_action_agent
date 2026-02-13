@@ -49,6 +49,15 @@ class AnalysisResponse:
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    is_favorite: bool = False
+    property_address: str | None = None
+    property_name: str | None = None
+    property_type: str | None = None
+    area: float | None = None
+    appraised_value: int | None = None
+    recommendation: str | None = None
+    expected_roi: float | None = None
+    confidence_score: float | None = None
 
 
 @dataclass(frozen=True)

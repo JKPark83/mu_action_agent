@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import run_analysis_workflow
@@ -120,9 +120,51 @@ async def create_analysis(
 
 
 @router.get("")
-async def list_analyses(db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def list_analyses(
+    db: AsyncSession = Depends(get_db),
+    search: str | None = Query(None, description="검색어 (사건번호, 물건명, 주소, 설명)"),
+    sort_by: str = Query("created_at", description="정렬 기준"),
+    sort_order: str = Query("desc", description="정렬 방향 (asc/desc)"),
+    favorites_only: bool = Query(False, description="즐겨찾기만 표시"),
+    status: str | None = Query(None, description="상태 필터"),
+) -> list[dict]:
     """분석 작업 목록을 조회합니다."""
-    result = await db.execute(select(Analysis).order_by(Analysis.created_at.desc()))
+    query = select(Analysis)
+
+    # Search filter
+    if search:
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Analysis.case_number.ilike(pattern),
+                Analysis.property_name.ilike(pattern),
+                Analysis.property_address.ilike(pattern),
+                Analysis.description.ilike(pattern),
+            )
+        )
+
+    # Favorites filter
+    if favorites_only:
+        query = query.where(Analysis.is_favorite == True)  # noqa: E712
+
+    # Status filter
+    if status:
+        query = query.where(Analysis.status == status)
+
+    # Sort
+    _SORT_COLUMNS = {
+        "created_at": Analysis.created_at,
+        "recommendation": Analysis.recommendation,
+        "expected_roi": Analysis.expected_roi,
+        "appraised_value": Analysis.appraised_value,
+    }
+    sort_col = _SORT_COLUMNS.get(sort_by, Analysis.created_at)
+    if sort_order == "asc":
+        query = query.order_by(sort_col.asc().nullslast())
+    else:
+        query = query.order_by(sort_col.desc().nullslast())
+
+    result = await db.execute(query)
     analyses = result.scalars().all()
     return [
         {
@@ -131,6 +173,15 @@ async def list_analyses(db: AsyncSession = Depends(get_db)) -> list[dict]:
             "description": a.description,
             "case_number": a.case_number,
             "created_at": a.created_at.isoformat(),
+            "is_favorite": a.is_favorite or False,
+            "property_address": a.property_address,
+            "property_name": a.property_name,
+            "property_type": a.property_type,
+            "area": a.area,
+            "appraised_value": a.appraised_value,
+            "recommendation": a.recommendation,
+            "expected_roi": a.expected_roi,
+            "confidence_score": a.confidence_score,
         }
         for a in analyses
     ]
@@ -150,11 +201,21 @@ async def get_analysis(analysis_id: str, db: AsyncSession = Depends(get_db)) -> 
         "created_at": analysis.created_at.isoformat(),
         "started_at": analysis.started_at.isoformat() if analysis.started_at else None,
         "completed_at": analysis.completed_at.isoformat() if analysis.completed_at else None,
+        "parsed_documents": analysis.parsed_documents,
         "report": analysis.report,
         "rights_analysis": analysis.rights_analysis,
         "market_data": analysis.market_data,
         "news_analysis": analysis.news_analysis,
         "valuation": analysis.valuation,
+        "is_favorite": analysis.is_favorite or False,
+        "property_address": analysis.property_address,
+        "property_name": analysis.property_name,
+        "property_type": analysis.property_type,
+        "area": analysis.area,
+        "appraised_value": analysis.appraised_value,
+        "recommendation": analysis.recommendation,
+        "expected_roi": analysis.expected_roi,
+        "confidence_score": analysis.confidence_score,
     }
 
 
@@ -188,6 +249,17 @@ async def get_analysis_report(
     if analysis.status != AnalysisStatus.DONE:
         raise HTTPException(status_code=400, detail="분석이 아직 완료되지 않았습니다.")
     return analysis.report or {}
+
+
+@router.patch("/{analysis_id}/favorite")
+async def toggle_favorite(analysis_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """분석 작업의 즐겨찾기 상태를 토글합니다."""
+    analysis = await db.get(Analysis, analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="분석 작업을 찾을 수 없습니다.")
+    analysis.is_favorite = not (analysis.is_favorite or False)
+    await db.commit()
+    return {"id": analysis.id, "is_favorite": analysis.is_favorite}
 
 
 @router.delete("/{analysis_id}")

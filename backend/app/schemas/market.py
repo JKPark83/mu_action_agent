@@ -27,11 +27,20 @@ class RentTransaction:
 
 
 @dataclass(frozen=True)
+class MonthlyPrice:
+    """월별 평균 거래가"""
+
+    date: str  # "YYYY-MM"
+    price: int  # 평균 거래가 (원)
+
+
+@dataclass(frozen=True)
 class MarketDataResult:
     """시세 분석 결과"""
 
     recent_transactions: list[Transaction] = field(default_factory=list)
     recent_rent_transactions: list[RentTransaction] = field(default_factory=list)
+    monthly_averages: list[MonthlyPrice] = field(default_factory=list)
     avg_price_per_pyeong: int = 0
     price_range_low: int = 0
     price_range_high: int = 0

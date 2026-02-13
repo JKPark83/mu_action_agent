@@ -25,12 +25,28 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
+def _fix_json(text: str) -> str:
+    """LLM이 생성한 JSON의 흔한 오류를 수정한다."""
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
+def _try_parse(raw: str) -> dict:
+    """JSON 파싱을 시도하고, 실패하면 흔한 오류를 수정 후 재시도한다."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(_fix_json(raw))
+
+
 def _parse_json_response(text: str) -> dict:
     """LLM 응답에서 JSON을 추출한다."""
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
-        return json.loads(match.group(1).strip())
-    return json.loads(text.strip())
+        return _try_parse(match.group(1).strip())
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        return _try_parse(match.group(0))
+    return _try_parse(text.strip())
 
 
 async def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
@@ -100,15 +116,15 @@ async def report_generator_node(state: AgentState) -> AgentState:
             except Exception:
                 pass
 
-        # 시세 차트 데이터 (시장 데이터에서 추출)
+        # 시세 차트 데이터 (월별 평균가에서 추출)
         if state.market_data:
             try:
                 md = asdict(state.market_data)
                 chart_data: dict = {}
-                if md.get("recent_transactions"):
+                if md.get("monthly_averages"):
                     chart_data["price_trend"] = [
-                        {"date": t.get("date", ""), "price": t.get("price", 0)}
-                        for t in md["recent_transactions"][:20]
+                        {"date": m["date"], "price": m["price"]}
+                        for m in md["monthly_averages"]
                     ]
                 report["chart_data"] = chart_data
             except Exception:

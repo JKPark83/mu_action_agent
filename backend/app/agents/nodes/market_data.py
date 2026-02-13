@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, timedelta
 from statistics import mean
@@ -9,7 +10,7 @@ from statistics import mean
 from app.agents.state import AgentState
 from app.agents.tools.address_converter import address_to_lawd_code
 from app.agents.tools.real_estate_api import fetch_transactions, resolve_property_type
-from app.schemas.market import MarketDataResult, RentTransaction, Transaction
+from app.schemas.market import MarketDataResult, MonthlyPrice, RentTransaction, Transaction
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +144,12 @@ def analyze_trade_data(
             )
         )
 
+    # 전체 필터링된 거래에서 월별 평균 계산 (차트용)
+    monthly_avgs = compute_monthly_averages(filtered)
+
     result = MarketDataResult(
         recent_transactions=recent,
+        monthly_averages=monthly_avgs,
         avg_price_per_pyeong=avg_per_pyeong,
         price_range_low=min(prices),
         price_range_high=max(prices),
@@ -197,24 +202,44 @@ def analyze_rent_data(
 # ---------------------------------------------------------------------------
 
 
+def compute_monthly_averages(transactions: list[dict]) -> list[MonthlyPrice]:
+    """거래 데이터를 월별 평균가로 집계한다."""
+    monthly: dict[str, list[int]] = {}
+    for t in transactions:
+        key = f"{t['년']}-{t['월'].zfill(2)}"
+        monthly.setdefault(key, []).append(t["거래금액"])
+    return [
+        MonthlyPrice(date=k, price=int(mean(v)))
+        for k, v in sorted(monthly.items())
+    ]
+
+
 async def _collect_transactions(
     lawd_code: str,
     base_type: str,
     transaction_type: str,
     months: int = 12,
 ) -> list[dict]:
-    """최근 N개월간 거래 데이터를 수집한다."""
-    all_txns: list[dict] = []
+    """최근 N개월간 거래 데이터를 병렬로 수집한다."""
     today = date.today()
+    # 중복 제거된 연월 목록 생성
+    deal_ymds: set[str] = set()
     for months_ago in range(months):
         target_date = today - timedelta(days=30 * months_ago)
-        deal_ymd = target_date.strftime("%Y%m")
-        try:
-            txns = await fetch_transactions(lawd_code, deal_ymd, base_type, transaction_type)
-            all_txns.extend(txns)
-        except Exception as exc:
-            logger.warning("  MOLIT %s API 호출 실패 [%s]: %s", transaction_type, deal_ymd, exc)
-    return all_txns
+        deal_ymds.add(target_date.strftime("%Y%m"))
+
+    sem = asyncio.Semaphore(10)
+
+    async def fetch_one(deal_ymd: str) -> list[dict]:
+        async with sem:
+            try:
+                return await fetch_transactions(lawd_code, deal_ymd, base_type, transaction_type)
+            except Exception as exc:
+                logger.warning("  MOLIT %s API 호출 실패 [%s]: %s", transaction_type, deal_ymd, exc)
+                return []
+
+    results = await asyncio.gather(*[fetch_one(ymd) for ymd in sorted(deal_ymds, reverse=True)])
+    return [t for txns in results for t in txns]
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +292,8 @@ async def market_data_node(state: AgentState) -> AgentState:
             address, lawd_code, base_type, target_area, building_name or "(없음)",
         )
 
-        # === 매매 + 전월세 데이터 수집 ===
-        all_trade = await _collect_transactions(lawd_code, base_type, "매매")
+        # === 매매 + 전월세 데이터 수집 (매매는 5년치) ===
+        all_trade = await _collect_transactions(lawd_code, base_type, "매매", months=60)
         all_rent = await _collect_transactions(lawd_code, base_type, "전월세")
 
         logger.info("시세 API 수집 결과: 매매 %d건, 전월세 %d건", len(all_trade), len(all_rent))
@@ -307,6 +332,7 @@ async def market_data_node(state: AgentState) -> AgentState:
         result = MarketDataResult(
             recent_transactions=trade_result.recent_transactions,
             recent_rent_transactions=recent_rent,
+            monthly_averages=trade_result.monthly_averages,
             avg_price_per_pyeong=trade_result.avg_price_per_pyeong,
             price_range_low=trade_result.price_range_low,
             price_range_high=trade_result.price_range_high,

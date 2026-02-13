@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, async_session, Base
+from app.migrations import run_migrations, backfill_summary_fields
 
 
 def _setup_logging() -> None:
@@ -45,6 +46,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup: create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Run migrations (add new columns to existing tables)
+    async with async_session() as session:
+        await run_migrations(session)
+    # Backfill summary fields for existing analyses
+    await backfill_summary_fields()
     yield
     # Shutdown
     await engine.dispose()
