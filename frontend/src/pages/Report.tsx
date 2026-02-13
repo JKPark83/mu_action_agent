@@ -11,14 +11,14 @@ import PriceChart from '../components/report/PriceChart'
 import RightsAnalysisTab from '../components/report/RightsAnalysisTab'
 import MarketDataTab from '../components/report/MarketDataTab'
 import NewsTab from '../components/report/NewsTab'
-import CostBreakdownTab from '../components/report/CostBreakdownTab'
+import InvestmentCalculator from '../components/report/InvestmentCalculator'
 import DisclaimerBanner from '../components/report/DisclaimerBanner'
 
 const TABS = [
   { key: 'rights', label: '권리분석' },
   { key: 'market', label: '시세분석' },
   { key: 'news', label: '뉴스' },
-  { key: 'cost', label: '비용/수익' },
+  { key: 'cost', label: '투자계산기' },
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
@@ -177,7 +177,12 @@ export default function Report() {
             <NewsTab data={detail.news_analysis as Record<string, unknown> | undefined} />
           )}
           {activeTab === 'cost' && (
-            <CostBreakdownTab data={report.cost_breakdown} expectedRoi={report.expected_roi} />
+            <InvestmentCalculator
+              bidPrice={report.bid_price}
+              salePrice={report.sale_price}
+              propertyType={detail.property_type}
+              area={detail.area}
+            />
           )}
         </div>
       </div>
