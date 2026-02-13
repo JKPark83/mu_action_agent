@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Analysis, AnalysisDetail } from '../types'
+import type { Analysis, AnalysisDetail, AnalysisListParams } from '../types'
 
 export const api = axios.create({
   baseURL: '/api/v1',
@@ -37,4 +37,14 @@ export async function fetchReport(id: string): Promise<AnalysisDetail> {
 
 export async function deleteAnalysis(id: string): Promise<void> {
   await api.delete(`/analyses/${id}`)
+}
+
+export async function fetchAnalyses(params?: AnalysisListParams): Promise<Analysis[]> {
+  const { data } = await api.get<Analysis[]>('/analyses', { params })
+  return data
+}
+
+export async function toggleFavorite(id: string): Promise<{ id: string; is_favorite: boolean }> {
+  const { data } = await api.patch<{ id: string; is_favorite: boolean }>(`/analyses/${id}/favorite`)
+  return data
 }

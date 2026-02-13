@@ -27,9 +27,27 @@ export interface Analysis {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  is_favorite: boolean
+  property_address: string | null
+  property_name: string | null
+  property_type: string | null
+  area: number | null
+  appraised_value: number | null
+  recommendation: Recommendation | null
+  expected_roi: number | null
+  confidence_score: number | null
+}
+
+export interface AnalysisListParams {
+  search?: string
+  sort_by?: 'created_at' | 'recommendation' | 'expected_roi' | 'appraised_value'
+  sort_order?: 'asc' | 'desc'
+  favorites_only?: boolean
+  status?: AnalysisStatus
 }
 
 export interface AnalysisDetail extends Analysis {
+  parsed_documents: Record<string, unknown> | null
   report: AnalysisReport | null
   rights_analysis: Record<string, unknown> | null
   market_data: Record<string, unknown> | null

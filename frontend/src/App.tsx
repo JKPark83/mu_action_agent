@@ -1,10 +1,10 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Header from './components/common/Header'
-import Home from './pages/Home'
+import Dashboard from './pages/Dashboard'
+import NewAnalysis from './pages/NewAnalysis'
 import AnalysisProgress from './pages/AnalysisProgress'
 import Report from './pages/Report'
-import History from './pages/History'
 
 const queryClient = new QueryClient()
 
@@ -16,10 +16,10 @@ function App() {
           <Header />
           <main>
             <Routes>
-              <Route path="/" element={<Home />} />
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/new" element={<NewAnalysis />} />
               <Route path="/analysis/:id" element={<AnalysisProgress />} />
               <Route path="/report/:id" element={<Report />} />
-              <Route path="/history" element={<History />} />
             </Routes>
           </main>
         </div>

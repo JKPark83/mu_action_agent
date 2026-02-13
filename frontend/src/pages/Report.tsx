@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { fetchReport } from '../api/client'
+import type { AnalysisDetail, AnalysisReport } from '../types'
 import { LoadingSkeleton, ErrorMessage } from '../components/common/Loading'
+import PropertyInfoCard from '../components/report/PropertyInfoCard'
 import RecommendationCard from '../components/report/RecommendationCard'
 import PriceRangeCard from '../components/report/PriceRangeCard'
 import PriceChart from '../components/report/PriceChart'
@@ -21,6 +23,58 @@ const TABS = [
 
 type TabKey = (typeof TABS)[number]['key']
 
+/** chart_data.price_trend가 유효한지 (날짜가 비어있지 않은지) 확인 */
+function hasValidDates(data: { date: string; price: number }[]): boolean {
+  return data.length > 0 && data[0].date.length >= 7
+}
+
+/** market_data.recent_transactions에서 월별 평균을 재구성 */
+function buildMonthlyFromTransactions(
+  marketData: Record<string, unknown> | null,
+): { date: string; price: number }[] {
+  if (!marketData) return []
+  const txns = marketData.recent_transactions as
+    | { transaction_date: string; price: number }[]
+    | undefined
+  if (!txns?.length) return []
+
+  const monthly: Record<string, { sum: number; count: number }> = {}
+  for (const t of txns) {
+    if (!t.transaction_date || t.transaction_date.length < 7) continue
+    const key = t.transaction_date.substring(0, 7)
+    if (!monthly[key]) monthly[key] = { sum: 0, count: 0 }
+    monthly[key].sum += t.price
+    monthly[key].count++
+  }
+  return Object.entries(monthly)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, { sum, count }]) => ({ date, price: Math.round(sum / count) }))
+}
+
+/** 차트 데이터 구성: price_trend 우선, fallback으로 market_data에서 재구성 */
+function buildChartData(
+  report: AnalysisReport | null,
+  marketData: Record<string, unknown> | null,
+): { date: string; price: number }[] {
+  const priceTrend = report?.chart_data?.price_trend ?? []
+  if (hasValidDates(priceTrend)) return priceTrend
+  return buildMonthlyFromTransactions(marketData)
+}
+
+/** parsed_documents에서 사건번호/채무자/채권자 추출 */
+function extractParsedInfo(detail: AnalysisDetail) {
+  const parsed = detail.parsed_documents as Record<string, Record<string, unknown>> | null
+  const registry = parsed?.registry as
+    | { owner?: string; section_b_entries?: { holder: string; right_type: string }[] }
+    | undefined
+  const saleItem = parsed?.sale_item as { case_number?: string } | undefined
+  return {
+    caseNumber: detail.case_number || saleItem?.case_number || null,
+    debtorName: registry?.owner ?? null,
+    creditorName: registry?.section_b_entries?.[0]?.holder ?? null,
+  }
+}
+
 export default function Report() {
   const { id } = useParams<{ id: string }>()
   const [activeTab, setActiveTab] = useState<TabKey>('rights')
@@ -30,6 +84,17 @@ export default function Report() {
     queryFn: () => fetchReport(id!),
     enabled: !!id,
   })
+
+  // 모든 Hook은 early return 앞에 위치해야 함
+  const chartData = useMemo(
+    () => buildChartData(detail?.report ?? null, (detail?.market_data as Record<string, unknown>) ?? null),
+    [detail?.report, detail?.market_data],
+  )
+
+  const { caseNumber, debtorName, creditorName } = useMemo(
+    () => (detail ? extractParsedInfo(detail) : { caseNumber: null, debtorName: null, creditorName: null }),
+    [detail],
+  )
 
   if (isLoading) return <LoadingSkeleton />
   if (error || !detail) return <ErrorMessage message="리포트를 불러올 수 없습니다." />
@@ -43,12 +108,21 @@ export default function Report() {
   }
 
   // analysis_summary에서 전체 의견 추출 (partial report 대비)
-  const summary = (report as Record<string, unknown>).analysis_summary as Record<string, string> | undefined
+  const summary = (report as unknown as Record<string, unknown>).analysis_summary as Record<string, string> | undefined
   const hasValuation = !!report.recommendation
 
   return (
     <div className="max-w-4xl mx-auto py-8 px-4 space-y-6">
       <h1 className="text-2xl font-bold text-gray-900">분석 리포트</h1>
+
+      {/* 물건 정보 */}
+      <PropertyInfoCard
+        caseNumber={caseNumber}
+        address={detail.property_address}
+        propertyType={detail.property_type}
+        debtorName={debtorName}
+        creditorName={creditorName}
+      />
 
       {/* 추천 카드 + 가격 분석 */}
       {hasValuation ? (
@@ -71,7 +145,7 @@ export default function Report() {
       )}
 
       {/* 시세 차트 */}
-      <PriceChart data={report.chart_data?.price_trend ?? []} />
+      <PriceChart data={chartData} />
 
       {/* 탭 영역 */}
       <div className="bg-white rounded-xl border border-gray-200">

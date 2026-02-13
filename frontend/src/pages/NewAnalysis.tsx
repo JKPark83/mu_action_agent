@@ -5,7 +5,7 @@ import FileDropzone from '../components/upload/FileDropzone'
 import FileList from '../components/upload/FileList'
 import UploadForm from '../components/upload/UploadForm'
 
-export default function Home() {
+export default function NewAnalysis() {
   const [files, setFiles] = useState<File[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
