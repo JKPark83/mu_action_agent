@@ -10,6 +10,7 @@ class DocumentType(str, Enum):
     SALE_ITEM = "sale_item"  # 매각물건명세서
     STATUS_REPORT = "status_report"  # 현황조사보고서
     CASE_NOTICE = "case_notice"  # 사건송달내역
+    AUCTION_SUMMARY = "auction_summary"  # 경매 포털 종합 정보 (복합문서)
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class RegistryExtraction:
     property_address: str
     property_type: str
     area: float | None = None
+    building_name: str | None = None  # 아파트/건물 단지명
     owner: str | None = None
     section_a_entries: list[RightEntry] = field(default_factory=list)  # 갑구
     section_b_entries: list[RightEntry] = field(default_factory=list)  # 을구
@@ -66,3 +68,17 @@ class SaleItemExtraction:
     occupancy_info: list[OccupancyInfo] = field(default_factory=list)
     assumed_rights: list[str] = field(default_factory=list)
     special_conditions: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StatusReportExtraction:
+    """현황조사보고서 추출 결과"""
+
+    investigation_date: str | None = None  # 조사일자
+    property_address: str = ""  # 소재지
+    current_occupant: str | None = None  # 현 점유자
+    occupancy_status: str | None = None  # 점유 상태 (거주중, 공실, 영업중 등)
+    building_condition: str | None = None  # 건물 상태 (양호, 보통, 불량 등)
+    access_road: str | None = None  # 접근도로 상태
+    surroundings: str | None = None  # 주변 환경
+    special_notes: list[str] = field(default_factory=list)  # 특이사항

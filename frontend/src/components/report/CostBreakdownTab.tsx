@@ -67,7 +67,7 @@ export default function CostBreakdownTab({ data, expectedRoi }: CostBreakdownTab
           <span className="text-sm font-medium text-gray-700">예상 수익률</span>
           <span className={`text-lg font-bold ${expectedRoi >= 0 ? 'text-green-600' : 'text-red-600'}`}>
             {expectedRoi >= 0 ? '+' : ''}
-            {(expectedRoi * 100).toFixed(1)}%
+            {expectedRoi.toFixed(1)}%
           </span>
         </div>
       )}

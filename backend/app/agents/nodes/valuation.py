@@ -290,6 +290,42 @@ async def valuation_node(state: AgentState) -> AgentState:
             if rights.risk_factors:
                 risk_summary += f" ({', '.join(rights.risk_factors[:3])})"
 
+        # 상세 산출 근거 생성
+        reasoning_parts: list[str] = []
+
+        # 추정시세 근거
+        if market and market.avg_price_per_pyeong > 0:
+            reasoning_parts.append(
+                f"추정 시세: 최근 실거래 평균 평당가 {market.avg_price_per_pyeong:,}원 × "
+                f"{registry.area / 3.305785 if registry and registry.area else 0:.1f}평 = {estimated_value:,}원"
+            )
+        elif appraisal:
+            reasoning_parts.append(
+                f"추정 시세: 감정가 {appraisal.appraised_value:,}원 기준 (실거래 데이터 없음)"
+            )
+
+        # 입찰가 근거
+        reasoning_parts.append(
+            f"입찰 적정가: 추정 시세의 65~85%에서 부대비용({cost_total:,}원)"
+            + (f"과 인수권리({assumed_cost:,}원)를 차감" if assumed_cost > 0 else "을 차감")
+        )
+
+        # 매도가 근거
+        trend_desc = {"상승": "상승세(+3%)", "하락": "하락세(-3%)", "보합": "보합(0%)"}
+        reasoning_parts.append(
+            f"매도 적정가: 추정 시세 기준, 시세추이 {trend_desc.get(trend, '보합')}"
+            + (", 호재 반영(+2%)" if has_positive else "")
+            + (", 악재 반영(-2%)" if has_negative else "")
+        )
+
+        # 수익률 및 추천 근거
+        reasoning_parts.append(
+            f"예상 수익률: {roi_mod:.1f}% (적정입찰가 {bid_range.moderate:,}원 → 적정매도가 {sale_range.moderate:,}원)"
+        )
+        reasoning_parts.append(reason)
+
+        full_reasoning = "\n".join(reasoning_parts)
+
         result = ValuationResult(
             recommendation=recommendation,
             bid_price=bid_range,
@@ -297,7 +333,7 @@ async def valuation_node(state: AgentState) -> AgentState:
             expected_roi=roi_mod,
             cost_breakdown=costs,
             risk_summary=risk_summary,
-            reasoning=reason,
+            reasoning=full_reasoning,
             confidence_score=0.8,
         )
 

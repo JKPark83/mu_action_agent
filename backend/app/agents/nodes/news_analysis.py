@@ -33,9 +33,15 @@ def _get_client() -> AsyncAnthropic:
 
 def _parse_json_response(text: str) -> dict:
     """LLM 응답에서 JSON을 추출한다."""
+    # 1. ```json ... ``` 블록
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
         return json.loads(match.group(1).strip())
+    # 2. 텍스트 내 첫 번째 { ... } 블록
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        return json.loads(match.group(0))
+    # 3. 전체가 JSON
     return json.loads(text.strip())
 
 
@@ -118,25 +124,43 @@ async def news_analysis_node(state: AgentState) -> AgentState:
 
     try:
         address = registry.property_address
-        queries = generate_search_queries(address)
-        logger.info("뉴스분석 시작: %s (키워드 %d개)", address, len(queries))
+        building_name = getattr(registry, "building_name", None) or ""
+        queries = generate_search_queries(address, apt_name=building_name)
+        logger.info("뉴스분석 시작: %s (키워드 %d개: %s)", address, len(queries), queries)
 
         # 뉴스 수집
         all_news: list[dict] = []
+        failed_queries: list[str] = []
         for query in queries:
             try:
                 items = await search_news(query, display=10)
+                if not items:
+                    logger.warning("뉴스 검색 결과 0건: 키워드='%s'", query)
                 all_news.extend(items)
             except Exception as exc:
+                failed_queries.append(query)
                 logger.warning("뉴스 검색 실패 (%s): %s", query, exc)
                 continue
+
+        if failed_queries:
+            logger.error(
+                "뉴스 API 호출 실패 %d/%d 키워드: %s",
+                len(failed_queries), len(queries), failed_queries,
+            )
 
         # 중복 제거
         unique_news = deduplicate_news(all_news)
         logger.info("뉴스 수집 완료: %d건 (중복 제거 후 %d건)", len(all_news), len(unique_news))
 
         if not unique_news:
-            errors.append(f"뉴스분석: 수집된 뉴스 없음 ({address})")
+            logger.error(
+                "뉴스분석 실패: 수집된 뉴스 0건. 키워드: %s, API 실패: %d건, 주소: %s",
+                queries, len(failed_queries), address,
+            )
+            errors.append(
+                f"뉴스분석: 수집된 뉴스 없음 ({address}). "
+                f"키워드 {len(queries)}개 모두 결과 없음. 네이버 API 키를 확인하세요."
+            )
             state.news_analysis = None
             state.errors = errors
             return state

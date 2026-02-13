@@ -9,19 +9,19 @@ export async function createAnalysis(
   files: File[],
   metadata?: { description?: string; caseNumber?: string },
 ): Promise<Analysis> {
-  // 1. 분석 생성
-  const { data: analysis } = await api.post<Analysis>('/analyses', {
-    description: metadata?.description,
-    case_number: metadata?.caseNumber,
-  })
-
-  // 2. 파일 업로드
+  // 파일과 메타데이터를 단일 multipart/form-data 요청으로 전송
+  const formData = new FormData()
   for (const file of files) {
-    const formData = new FormData()
-    formData.append('file', file)
-    await api.post(`/files/upload?analysis_id=${analysis.id}`, formData)
+    formData.append('files', file)
+  }
+  if (metadata?.description) {
+    formData.append('description', metadata.description)
+  }
+  if (metadata?.caseNumber) {
+    formData.append('case_number', metadata.caseNumber)
   }
 
+  const { data: analysis } = await api.post<Analysis>('/analyses', formData)
   return analysis
 }
 

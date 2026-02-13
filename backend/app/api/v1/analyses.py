@@ -3,26 +3,25 @@
 from __future__ import annotations
 
 import logging
+import shutil
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import run_analysis_workflow
 from app.api.deps import get_db
+from app.config import settings
 from app.database import async_session
 from app.models.analysis import Analysis, AnalysisStatus
+from app.models.file import UploadedFile
 
 logger = logging.getLogger("app.analyses")
 
 router = APIRouter()
-
-
-class CreateAnalysisRequest(BaseModel):
-    description: str | None = None
-    case_number: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,21 +68,54 @@ def _build_progress(analysis: Analysis) -> dict[str, Any]:
 @router.post("", status_code=201)
 async def create_analysis(
     background_tasks: BackgroundTasks,
-    body: CreateAnalysisRequest | None = None,
+    files: list[UploadFile] = [],
+    description: str | None = Form(None),
+    case_number: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """새 분석 작업을 생성하고 백그라운드 워크플로우를 시작합니다."""
+    """새 분석 작업을 생성하고 백그라운드 워크플로우를 시작합니다.
+
+    파일과 메타데이터를 multipart/form-data로 함께 받습니다.
+    파일이 없으면 분석을 생성만 하고 워크플로우는 시작하지 않습니다.
+    """
     analysis = Analysis()
-    if body:
-        analysis.description = body.description
-        analysis.case_number = body.case_number
+    analysis.description = description
+    analysis.case_number = case_number
     db.add(analysis)
     await db.commit()
     await db.refresh(analysis)
 
-    background_tasks.add_task(run_analysis_workflow, analysis.id)
+    # 파일 저장
+    file_paths: list[str] = []
+    upload_dir = Path(settings.upload_dir) / analysis.id
+    upload_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.debug("created analysis: %s", analysis.id)
+    for f in files:
+        if not f.filename or not f.filename.lower().endswith(".pdf"):
+            continue
+        file_id = str(uuid4())
+        suffix = Path(f.filename).suffix
+        stored_path = upload_dir / f"{file_id}{suffix}"
+        with open(stored_path, "wb") as buf:
+            shutil.copyfileobj(f.file, buf)
+
+        uploaded = UploadedFile(
+            id=file_id,
+            analysis_id=analysis.id,
+            filename=f.filename,
+            stored_path=str(stored_path),
+            file_size=stored_path.stat().st_size,
+        )
+        db.add(uploaded)
+        file_paths.append(str(stored_path))
+
+    await db.commit()
+
+    # 파일이 있을 때만 워크플로우 시작
+    if file_paths:
+        background_tasks.add_task(run_analysis_workflow, analysis.id, file_paths)
+
+    logger.debug("created analysis: %s with %d files", analysis.id, len(file_paths))
     return {"id": analysis.id, "status": analysis.status.value}
 
 

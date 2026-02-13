@@ -13,6 +13,7 @@ from app.agents.prompts.document_prompts import (
     CLASSIFY_PROMPT,
     REGISTRY_EXTRACTION_PROMPT,
     SALE_ITEM_EXTRACTION_PROMPT,
+    STATUS_REPORT_EXTRACTION_PROMPT,
 )
 from app.agents.state import AgentState
 from app.agents.tools.pdf_extractor import extract_text_from_pdf
@@ -23,6 +24,7 @@ from app.schemas.document import (
     RegistryExtraction,
     RightEntry,
     SaleItemExtraction,
+    StatusReportExtraction,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,11 +41,15 @@ def _get_client() -> AsyncAnthropic:
 
 def _parse_json_response(text: str) -> dict:
     """LLM 응답에서 JSON을 추출한다."""
-    # ```json ... ``` 블록이 있으면 추출
+    # 1. ```json ... ``` 블록
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
         return json.loads(match.group(1).strip())
-    # 전체 텍스트가 JSON인 경우
+    # 2. 텍스트 내 첫 번째 { ... } 블록
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        return json.loads(match.group(0))
+    # 3. 전체가 JSON
     return json.loads(text.strip())
 
 
@@ -101,6 +107,7 @@ async def extract_registry_data(text: str) -> RegistryExtraction:
         property_address=data.get("property_address", ""),
         property_type=data.get("property_type", ""),
         area=data.get("area"),
+        building_name=data.get("building_name"),
         owner=data.get("owner"),
         section_a_entries=section_a,
         section_b_entries=section_b,
@@ -114,11 +121,29 @@ async def extract_appraisal_data(text: str) -> AppraisalExtraction:
     data = _parse_json_response(raw)
 
     return AppraisalExtraction(
-        appraised_value=int(data.get("appraised_value", 0)),
+        appraised_value=int(data.get("appraised_value") or 0),
         land_value=data.get("land_value"),
         building_value=data.get("building_value"),
         land_area=data.get("land_area"),
         building_area=data.get("building_area"),
+    )
+
+
+async def extract_status_report_data(text: str) -> StatusReportExtraction:
+    """현황조사보고서에서 구조화된 데이터를 추출한다."""
+    prompt = STATUS_REPORT_EXTRACTION_PROMPT.format(text=text)
+    raw = await _call_llm(prompt)
+    data = _parse_json_response(raw)
+
+    return StatusReportExtraction(
+        investigation_date=data.get("investigation_date"),
+        property_address=data.get("property_address", ""),
+        current_occupant=data.get("current_occupant"),
+        occupancy_status=data.get("occupancy_status"),
+        building_condition=data.get("building_condition"),
+        access_road=data.get("access_road"),
+        surroundings=data.get("surroundings"),
+        special_notes=data.get("special_notes", []),
     )
 
 
@@ -160,6 +185,7 @@ async def document_parser_node(state: AgentState) -> AgentState:
     registry: RegistryExtraction | None = None
     appraisal: AppraisalExtraction | None = None
     sale_item: SaleItemExtraction | None = None
+    status_report: StatusReportExtraction | None = None
     errors: list[str] = list(state.errors)
 
     for file_path in state.file_paths:
@@ -172,12 +198,33 @@ async def document_parser_node(state: AgentState) -> AgentState:
             doc_type, confidence = await classify_document(text)
             logger.info("문서 분류: %s (confidence=%.2f) - %s", doc_type, confidence, file_path)
 
-            if doc_type == "registry":
+            if doc_type == "auction_summary":
+                # 복합문서: 3가지 추출을 모두 시도 (개별 실패 허용)
+                logger.info("복합문서 감지 - 등기/감정/매각 정보 통합 추출 시작")
+                try:
+                    registry = await extract_registry_data(text)
+                except Exception as exc:
+                    logger.warning("복합문서 등기 추출 실패: %s", exc)
+                try:
+                    appraisal = await extract_appraisal_data(text)
+                except Exception as exc:
+                    logger.warning("복합문서 감정 추출 실패: %s", exc)
+                try:
+                    sale_item = await extract_sale_item_data(text)
+                except Exception as exc:
+                    logger.warning("복합문서 매각 추출 실패: %s", exc)
+                try:
+                    status_report = await extract_status_report_data(text)
+                except Exception as exc:
+                    logger.warning("복합문서 현황조사 추출 실패: %s", exc)
+            elif doc_type == "registry":
                 registry = await extract_registry_data(text)
             elif doc_type == "appraisal":
                 appraisal = await extract_appraisal_data(text)
             elif doc_type == "sale_item":
                 sale_item = await extract_sale_item_data(text)
+            elif doc_type == "status_report":
+                status_report = await extract_status_report_data(text)
             else:
                 logger.info("지원하지 않는 문서 유형 건너뜀: %s", doc_type)
         except Exception as exc:
@@ -187,5 +234,6 @@ async def document_parser_node(state: AgentState) -> AgentState:
     state.registry = registry
     state.appraisal = appraisal
     state.sale_item = sale_item
+    state.status_report = status_report
     state.errors = errors
     return state

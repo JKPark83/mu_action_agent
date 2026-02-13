@@ -277,3 +277,124 @@ async def test_document_parser_node_handles_extraction_error():
     assert len(result.errors) == 1
     assert "PDF 손상" in result.errors[0]
     assert result.registry is None
+
+
+# ---------------------------------------------------------------------------
+# T-6: 복합문서 (auction_summary) 노드 전체 흐름
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_document_parser_node_auction_summary():
+    """auction_summary로 분류된 복합문서에서 등기/감정/매각 3가지를 모두 추출한다."""
+    state = AgentState(
+        analysis_id="test-auction",
+        file_paths=["/fake/tankauction.pdf"],
+    )
+
+    # PDF 추출 mock - 탱크옥션 종합 페이지 텍스트
+    async def mock_extract(file_path: str):
+        return "경매 2025타경33712 매각기일 감정가 546000000 건물등기 임차인 현황 tankauction", []
+
+    # 분류 mock - auction_summary로 분류
+    async def mock_classify(text: str):
+        return "auction_summary", 0.93
+
+    # 추출 mock
+    mock_registry = RegistryExtraction(
+        property_address="경기도 김포시 운양동 1301-1 한강신도시롯데캐슬 301동 6층 601호",
+        property_type="아파트",
+        area=84.9823,
+        owner="윤미라",
+    )
+    mock_appraisal = AppraisalExtraction(
+        appraised_value=546000000,
+        land_value=273000000,
+        building_value=273000000,
+        land_area=50.7099,
+        building_area=84.9823,
+    )
+    mock_sale_item = SaleItemExtraction(
+        case_number="2025타경33712",
+        property_address="경기도 김포시 운양동 1301-1",
+    )
+
+    with (
+        patch("app.agents.nodes.document_parser.extract_text_from_pdf", side_effect=mock_extract),
+        patch("app.agents.nodes.document_parser.classify_document", side_effect=mock_classify),
+        patch(
+            "app.agents.nodes.document_parser.extract_registry_data",
+            new_callable=AsyncMock,
+            return_value=mock_registry,
+        ),
+        patch(
+            "app.agents.nodes.document_parser.extract_appraisal_data",
+            new_callable=AsyncMock,
+            return_value=mock_appraisal,
+        ),
+        patch(
+            "app.agents.nodes.document_parser.extract_sale_item_data",
+            new_callable=AsyncMock,
+            return_value=mock_sale_item,
+        ),
+    ):
+        result = await document_parser_node(state)
+
+    # 3가지 모두 추출되어야 함
+    assert result.registry is not None
+    assert result.registry.property_address == "경기도 김포시 운양동 1301-1 한강신도시롯데캐슬 301동 6층 601호"
+    assert result.registry.area == pytest.approx(84.9823)
+    assert result.appraisal is not None
+    assert result.appraisal.appraised_value == 546000000
+    assert result.sale_item is not None
+    assert result.sale_item.case_number == "2025타경33712"
+    assert len(result.errors) == 0
+
+
+@pytest.mark.asyncio
+async def test_document_parser_node_auction_summary_partial_failure():
+    """auction_summary에서 일부 추출이 실패해도 나머지는 정상 추출한다."""
+    state = AgentState(
+        analysis_id="test-auction-partial",
+        file_paths=["/fake/tankauction.pdf"],
+    )
+
+    async def mock_extract(file_path: str):
+        return "경매 2025타경33712 매각기일 감정가 건물등기 임차인 현황 tankauction", []
+
+    async def mock_classify(text: str):
+        return "auction_summary", 0.90
+
+    mock_registry = RegistryExtraction(
+        property_address="경기도 김포시 운양동",
+        property_type="아파트",
+        area=84.98,
+    )
+    mock_appraisal = AppraisalExtraction(appraised_value=546000000)
+
+    with (
+        patch("app.agents.nodes.document_parser.extract_text_from_pdf", side_effect=mock_extract),
+        patch("app.agents.nodes.document_parser.classify_document", side_effect=mock_classify),
+        patch(
+            "app.agents.nodes.document_parser.extract_registry_data",
+            new_callable=AsyncMock,
+            return_value=mock_registry,
+        ),
+        patch(
+            "app.agents.nodes.document_parser.extract_appraisal_data",
+            new_callable=AsyncMock,
+            return_value=mock_appraisal,
+        ),
+        patch(
+            "app.agents.nodes.document_parser.extract_sale_item_data",
+            new_callable=AsyncMock,
+            side_effect=Exception("매각물건 추출 실패"),
+        ),
+    ):
+        result = await document_parser_node(state)
+
+    # 등기/감정은 성공, 매각은 실패해도 에러 없이 진행
+    assert result.registry is not None
+    assert result.appraisal is not None
+    assert result.sale_item is None
+    assert len(result.errors) == 0  # 개별 추출 실패는 warning 로그만, errors에 추가하지 않음
