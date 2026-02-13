@@ -7,11 +7,16 @@ interface RightsAnalysisData {
     deposit: number
     has_opposition_right: boolean
     has_priority_repayment: boolean
+    move_in_date?: string
+    confirmed_date?: string
+    dividend_applied?: boolean
+    dividend_ranking?: number | null
     expected_dividend?: number
   }[]
   risk_level?: string
   risk_factors?: string[]
   total_assumed_amount?: number
+  total_assumed_deposit?: number
 }
 
 function formatKRW(value: number): string {
@@ -23,10 +28,21 @@ function formatKRW(value: number): string {
   return `${Math.floor(value / 10_000).toLocaleString()}만원`
 }
 
-const RISK_COLORS: Record<string, string> = {
-  HIGH: 'bg-red-100 text-red-800',
-  MEDIUM: 'bg-yellow-100 text-yellow-800',
-  LOW: 'bg-green-100 text-green-800',
+function formatDate(date?: string): string {
+  if (!date) return '-'
+  return date
+}
+
+function formatRanking(ranking?: number | null): string {
+  if (ranking === null || ranking === undefined) return '-'
+  if (ranking === 0) return '최우선'
+  return `${ranking}순위`
+}
+
+const RISK_COLORS: Record<string, { className: string; label: string }> = {
+  high: { className: 'bg-red-100 text-red-800', label: '높음' },
+  medium: { className: 'bg-yellow-100 text-yellow-800', label: '보통' },
+  low: { className: 'bg-green-100 text-green-800', label: '낮음' },
 }
 
 export default function RightsAnalysisTab({ data }: { data?: RightsAnalysisData }) {
@@ -46,8 +62,8 @@ export default function RightsAnalysisTab({ data }: { data?: RightsAnalysisData 
       {data.risk_level && (
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500">위험도:</span>
-          <span className={`px-2 py-0.5 rounded text-xs font-bold ${RISK_COLORS[data.risk_level] ?? 'bg-gray-100 text-gray-600'}`}>
-            {data.risk_level}
+          <span className={`px-2 py-0.5 rounded text-xs font-bold ${RISK_COLORS[data.risk_level]?.className ?? 'bg-gray-100 text-gray-600'}`}>
+            {RISK_COLORS[data.risk_level]?.label ?? data.risk_level}
           </span>
         </div>
       )}
@@ -96,8 +112,11 @@ export default function RightsAnalysisTab({ data }: { data?: RightsAnalysisData 
                 <tr className="border-b border-gray-200">
                   <th className="text-left py-2 px-2 text-gray-500 font-medium">이름</th>
                   <th className="text-right py-2 px-2 text-gray-500 font-medium">보증금</th>
+                  <th className="text-center py-2 px-2 text-gray-500 font-medium">전입일</th>
+                  <th className="text-center py-2 px-2 text-gray-500 font-medium">확정일</th>
                   <th className="text-center py-2 px-2 text-gray-500 font-medium">대항력</th>
-                  <th className="text-center py-2 px-2 text-gray-500 font-medium">우선변제권</th>
+                  <th className="text-center py-2 px-2 text-gray-500 font-medium">배당신청</th>
+                  <th className="text-center py-2 px-2 text-gray-500 font-medium">배당순위</th>
                 </tr>
               </thead>
               <tbody>
@@ -105,13 +124,40 @@ export default function RightsAnalysisTab({ data }: { data?: RightsAnalysisData 
                   <tr key={i} className="border-b border-gray-100">
                     <td className="py-2 px-2 text-gray-800">{t.name}</td>
                     <td className="py-2 px-2 text-right text-gray-800">{formatKRW(t.deposit)}</td>
-                    <td className="py-2 px-2 text-center">{t.has_opposition_right ? '있음' : '없음'}</td>
-                    <td className="py-2 px-2 text-center">{t.has_priority_repayment ? '있음' : '없음'}</td>
+                    <td className="py-2 px-2 text-center text-gray-600">{formatDate(t.move_in_date)}</td>
+                    <td className="py-2 px-2 text-center text-gray-600">{formatDate(t.confirmed_date)}</td>
+                    <td className="py-2 px-2 text-center">
+                      <span className={t.has_opposition_right ? 'text-red-600 font-medium' : 'text-gray-400'}>
+                        {t.has_opposition_right ? '있음' : '없음'}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span className={t.dividend_applied ? 'text-blue-600 font-medium' : 'text-gray-400'}>
+                        {t.dividend_applied ? '신청' : '미신청'}
+                      </span>
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span className={t.dividend_ranking !== null && t.dividend_ranking !== undefined
+                        ? (t.dividend_ranking === 0 ? 'text-purple-600 font-bold' : 'text-blue-600 font-medium')
+                        : 'text-gray-400'}>
+                        {formatRanking(t.dividend_ranking)}
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          {/* 대항력 있는 임차인 인수 보증금 합계 */}
+          {(data.total_assumed_deposit ?? 0) > 0 && (
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-800">
+                <span className="font-medium">대항력 있는 임차인 인수 보증금 합계:</span>{' '}
+                <span className="font-bold">{formatKRW(data.total_assumed_deposit!)}</span>
+              </p>
+            </div>
+          )}
         </div>
       )}
 

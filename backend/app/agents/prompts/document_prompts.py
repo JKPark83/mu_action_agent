@@ -97,10 +97,15 @@ SALE_ITEM_EXTRACTION_PROMPT = """\
   - deposit: 보증금 (정수, 원 단위, 없으면 null)
   - monthly_rent: 월세 (정수, 원 단위, 없으면 null)
   - move_in_date: 전입일 (문자열 YYYY-MM-DD, 없으면 null)
+  - confirmed_date: 확정일자 (문자열 YYYY-MM-DD, 없으면 null. "확정일자", "확정일" 등으로 표기됨)
+  - dividend_applied: 배당신청 여부 (boolean, "배당요구", "배당신청", "배당" 키워드가 해당 임차인에 존재하면 true, 아니면 false)
 - assumed_rights: 인수할 권리 목록 (문자열 배열)
 - special_conditions: 특별매각조건 목록 (문자열 배열)
 
-주의: "임차인이 없으며 전부를 소유자가 점유 사용합니다" 같은 문구가 있으면 occupancy_info에 소유자 점유로 기록하세요.
+주의:
+- "임차인이 없으며 전부를 소유자가 점유 사용합니다" 같은 문구가 있으면 occupancy_info에 소유자 점유로 기록하세요.
+- 임차인 현황 테이블에서 확정일자와 배당여부 컬럼을 반드시 확인하세요.
+- 배당요구 여부는 "배당요구종기까지 배당요구를 한" 또는 "배당요구함", "배당신청" 등의 표현으로 판별합니다.
 반드시 JSON 형식으로만 응답해주세요 (다른 텍스트 없이).
 
 문서 텍스트:

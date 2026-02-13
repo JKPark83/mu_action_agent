@@ -41,12 +41,28 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
+def _fix_json(text: str) -> str:
+    """LLM이 생성한 JSON의 흔한 오류를 수정한다."""
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
+def _try_parse(raw: str) -> dict:
+    """JSON 파싱을 시도하고, 실패하면 흔한 오류를 수정 후 재시도한다."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(_fix_json(raw))
+
+
 def _parse_json_response(text: str) -> dict:
     """LLM 응답에서 JSON을 추출한다."""
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
-        return json.loads(match.group(1).strip())
-    return json.loads(text.strip())
+        return _try_parse(match.group(1).strip())
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        return _try_parse(match.group(0))
+    return _try_parse(text.strip())
 
 
 async def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
@@ -171,11 +187,74 @@ def analyze_tenants(
                 deposit=deposit,
                 has_opposition_right=has_opposition,
                 has_priority_repayment=has_priority,
-                expected_dividend=None,
+                move_in_date=occ.move_in_date,
+                confirmed_date=occ.confirmed_date,
+                dividend_applied=occ.dividend_applied,
             )
         )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# 3-1. 배당순위 계산
+# ---------------------------------------------------------------------------
+
+
+def calculate_dividend_ranking(
+    all_entries: list[RightEntry],
+    tenants: list[TenantAnalysis],
+) -> dict[str, int]:
+    """배당순위를 계산한다.
+
+    배당 조건: 확정일자 있음 AND 배당신청함
+    순위 결정: 확정일 vs 각 권리의 설정일 기준 시간순 정렬
+    소액임차인 최우선변제: 배당순위 0
+
+    Returns:
+        {임차인이름: 배당순위} — 배당 자격 없으면 포함되지 않음
+    """
+    # 배당 대상인 임차인만 수집
+    eligible_tenants = [
+        t for t in tenants
+        if t.confirmed_date and t.dividend_applied
+    ]
+
+    if not eligible_tenants:
+        return {}
+
+    # 모든 날짜+설명을 하나의 리스트로 수집하여 정렬
+    # (날짜, 구분, 이름/설명)
+    timeline: list[tuple[str, str, str]] = []
+
+    # 권리 항목 (소유권이전/보존 제외)
+    for entry in all_entries:
+        if entry.right_type in ("소유권이전", "소유권보존"):
+            continue
+        if entry.registration_date:
+            timeline.append((entry.registration_date, "right", _format_entry(entry)))
+
+    # 배당 대상 임차인
+    for t in eligible_tenants:
+        timeline.append((t.confirmed_date, "tenant", t.name))  # type: ignore[arg-type]
+
+    # 날짜순 정렬
+    timeline.sort(key=lambda x: x[0])
+
+    # 순위 부여 (권리+임차인 통합 순위에서 임차인만 추출)
+    ranking: dict[str, int] = {}
+    rank = 1
+    for _date, category, name in timeline:
+        if category == "tenant":
+            ranking[name] = rank
+        rank += 1
+
+    # 소액임차인 최우선변제: 배당순위 0으로 덮어쓰기
+    for t in eligible_tenants:
+        if t.has_priority_repayment and t.name in ranking:
+            ranking[t.name] = 0
+
+    return ranking
 
 
 # ---------------------------------------------------------------------------
@@ -267,10 +346,36 @@ async def rights_analysis_node(state: AgentState) -> AgentState:
         all_entries = registry.section_a_entries + registry.section_b_entries
         assumed, extinguished, total_assumed = classify_rights(all_entries, basis_date)
 
-        # 3) 임차인 분석
+        # 3) 임차인 분석 + 배당순위 계산
         tenants: list[TenantAnalysis] = []
         if sale_item and sale_item.occupancy_info:
             tenants = analyze_tenants(sale_item.occupancy_info, basis_date)
+
+            # 배당순위 계산 후 임차인 정보에 반영
+            dividend_ranks = calculate_dividend_ranking(all_entries, tenants)
+            if dividend_ranks:
+                updated_tenants: list[TenantAnalysis] = []
+                for t in tenants:
+                    rank = dividend_ranks.get(t.name)
+                    updated_tenants.append(
+                        TenantAnalysis(
+                            name=t.name,
+                            deposit=t.deposit,
+                            has_opposition_right=t.has_opposition_right,
+                            has_priority_repayment=t.has_priority_repayment,
+                            move_in_date=t.move_in_date,
+                            confirmed_date=t.confirmed_date,
+                            dividend_applied=t.dividend_applied,
+                            dividend_ranking=rank,
+                            expected_dividend=t.expected_dividend,
+                        )
+                    )
+                tenants = updated_tenants
+
+        # 대항력 있는 임차인 보증금 합계
+        total_assumed_deposit = sum(
+            t.deposit for t in tenants if t.has_opposition_right
+        )
 
         # 4) Claude 종합 분석
         occupancy = sale_item.occupancy_info if sale_item else []
@@ -301,6 +406,7 @@ async def rights_analysis_node(state: AgentState) -> AgentState:
             risk_level=risk_level,
             risk_factors=risk_factors,
             total_assumed_amount=total_assumed,
+            total_assumed_deposit=total_assumed_deposit,
             confidence_score=claude_result["confidence"],
         )
 
