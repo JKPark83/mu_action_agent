@@ -200,12 +200,14 @@ def test_cost_breakdown_sum():
 @pytest.mark.asyncio
 async def test_valuation_node_no_data():
     """시장데이터·감정가 모두 없으면 에러."""
-    state = AgentState(analysis_id="test-no-val")
+    state: AgentState = {
+        "analysis_id": "test-no-val",
+    }
 
     result = await valuation_node(state)
 
-    assert result.valuation is None
-    assert any("시세 추정 불가" in e for e in result.errors)
+    assert result["valuation"] is None
+    assert any("시세 추정 불가" in e for e in result.get("errors", []))
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +218,13 @@ async def test_valuation_node_no_data():
 @pytest.mark.asyncio
 async def test_valuation_node_appraisal_fallback():
     """시장데이터 없이 감정가만으로도 평가를 수행한다."""
-    state = AgentState(
-        analysis_id="test-appraisal",
-        appraisal=AppraisalExtraction(appraised_value=500_000_000),
-    )
+    state: AgentState = {
+        "analysis_id": "test-appraisal",
+        "appraisal": AppraisalExtraction(appraised_value=500_000_000),
+    }
 
     result = await valuation_node(state)
 
-    assert result.valuation is not None
-    assert result.valuation.bid_price.conservative > 0
-    assert result.valuation.bid_price.moderate > result.valuation.bid_price.conservative
+    assert result["valuation"] is not None
+    assert result["valuation"].bid_price.conservative > 0
+    assert result["valuation"].bid_price.moderate > result["valuation"].bid_price.conservative

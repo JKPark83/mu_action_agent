@@ -188,26 +188,26 @@ async def extract_sale_item_data(text: str) -> SaleItemExtraction:
     )
 
 
-async def document_parser_node(state: AgentState) -> AgentState:
+async def document_parser_node(state: AgentState) -> dict:
     """문서 파싱 에이전트 노드.
 
     처리 흐름:
     1. 각 PDF 파일에서 텍스트 추출
     2. 문서 유형 분류
     3. 유형별 LLM 기반 데이터 구조화
-    4. 파싱 결과를 state에 저장
+    4. 파싱 결과를 partial dict로 반환
     """
     registry: RegistryExtraction | None = None
     appraisal: AppraisalExtraction | None = None
     sale_item: SaleItemExtraction | None = None
     status_report: StatusReportExtraction | None = None
-    errors: list[str] = list(state.errors)
+    new_errors: list[str] = []
 
-    for file_path in state.file_paths:
+    for file_path in state["file_paths"]:
         try:
             text, _tables = await extract_text_from_pdf(file_path)
             if not text.strip():
-                errors.append(f"텍스트 추출 실패: {file_path}")
+                new_errors.append(f"텍스트 추출 실패: {file_path}")
                 continue
 
             doc_type, confidence = await classify_document(text)
@@ -244,11 +244,14 @@ async def document_parser_node(state: AgentState) -> AgentState:
                 logger.info("지원하지 않는 문서 유형 건너뜀: %s", doc_type)
         except Exception as exc:
             logger.exception("문서 파싱 오류: %s", file_path)
-            errors.append(f"문서 파싱 오류 ({file_path}): {exc}")
+            new_errors.append(f"문서 파싱 오류 ({file_path}): {exc}")
 
-    state.registry = registry
-    state.appraisal = appraisal
-    state.sale_item = sale_item
-    state.status_report = status_report
-    state.errors = errors
-    return state
+    result: dict = {
+        "registry": registry,
+        "appraisal": appraisal,
+        "sale_item": sale_item,
+        "status_report": status_report,
+    }
+    if new_errors:
+        result["errors"] = new_errors
+    return result

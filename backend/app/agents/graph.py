@@ -1,15 +1,17 @@
-"""LangGraph 워크플로우 정의
+"""LangGraph StateGraph 워크플로우 정의
 
 문서파싱 → [권리분석 | 시세분석 | 뉴스분석] (병렬) → 가치평가 → 보고서 생성
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine
+from typing import Any
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import RetryPolicy
 
 from app.agents.nodes.document_parser import document_parser_node
 from app.agents.nodes.market_data import market_data_node
@@ -25,10 +27,21 @@ from app.models.analysis import Analysis, AnalysisStatus
 
 logger = logging.getLogger(__name__)
 
-# 노드 타입 정의
-NodeFunc = Callable[[AgentState], Coroutine[Any, Any, AgentState]]
+# ---------------------------------------------------------------------------
+# RetryPolicy 정의 (기존 _run_node_with_retry의 3-attempt 지수백오프를 대체)
+# ---------------------------------------------------------------------------
 
-# 워크플로우 노드 정의 (실행 순서)
+retry_policy = RetryPolicy(
+    initial_interval=1.0,
+    backoff_factor=2.0,
+    max_interval=128.0,
+    max_attempts=3,
+)
+
+# ---------------------------------------------------------------------------
+# 노드 이름 상수 (WebSocket 진행도 매핑용)
+# ---------------------------------------------------------------------------
+
 WORKFLOW_NODES: list[str] = [
     "document_parser",
     "rights_analysis",
@@ -38,44 +51,48 @@ WORKFLOW_NODES: list[str] = [
     "report_generator",
 ]
 
-# 노드 이름 → 함수 매핑
-NODE_REGISTRY: dict[str, NodeFunc] = {
-    "document_parser": document_parser_node,
-    "rights_analysis": rights_analysis_node,
-    "market_data": market_data_node,
-    "news_analysis": news_analysis_node,
-    "valuation": valuation_node,
-    "report_generator": report_generator_node,
-}
-
-# 병렬 실행 그룹 (document_parser 이후 동시 실행)
-PARALLEL_NODES = ["rights_analysis", "market_data", "news_analysis"]
+PARALLEL_NODES: list[str] = ["rights_analysis", "market_data", "news_analysis"]
 
 
 # ---------------------------------------------------------------------------
-# 에러 래퍼 (재시도 포함)
+# StateGraph 구성
 # ---------------------------------------------------------------------------
 
 
-async def _run_node_with_retry(
-    name: str,
-    func: NodeFunc,
-    state: AgentState,
-    max_retries: int = 3,
-) -> AgentState:
-    """노드를 실행하고 실패 시 지수 백오프로 재시도한다."""
-    for attempt in range(max_retries):
-        try:
-            return await func(state)
-        except Exception as exc:
-            if attempt == max_retries - 1:
-                logger.exception("%s 노드 최종 실패 (%d회 시도)", name, max_retries)
-                state.errors = list(state.errors) + [f"{name} 실패: {exc}"]
-                return state
-            wait = 2 ** attempt
-            logger.warning("%s 노드 실패 (시도 %d/%d), %ds 후 재시도: %s", name, attempt + 1, max_retries, wait, exc)
-            await asyncio.sleep(wait)
-    return state
+def build_graph() -> StateGraph:
+    """StateGraph를 구성하고 컴파일된 그래프를 반환한다."""
+    graph = StateGraph(AgentState)
+
+    # 노드 등록
+    graph.add_node("document_parser", document_parser_node, retry_policy=retry_policy)
+    graph.add_node("rights_analysis", rights_analysis_node, retry_policy=retry_policy)
+    graph.add_node("market_data", market_data_node, retry_policy=retry_policy)
+    graph.add_node("news_analysis", news_analysis_node, retry_policy=retry_policy)
+    graph.add_node("valuation", valuation_node, retry_policy=retry_policy)
+    graph.add_node("report_generator", report_generator_node, retry_policy=retry_policy)
+
+    # 엣지 정의
+    graph.add_edge(START, "document_parser")
+
+    # Fan-out: document_parser → 3개 병렬 노드
+    graph.add_edge("document_parser", "rights_analysis")
+    graph.add_edge("document_parser", "market_data")
+    graph.add_edge("document_parser", "news_analysis")
+
+    # Fan-in: 3개 병렬 노드 → valuation
+    graph.add_edge("rights_analysis", "valuation")
+    graph.add_edge("market_data", "valuation")
+    graph.add_edge("news_analysis", "valuation")
+
+    # Sequential
+    graph.add_edge("valuation", "report_generator")
+    graph.add_edge("report_generator", END)
+
+    return graph.compile()
+
+
+# 모듈 레벨에서 컴파일 (앱 시작 시 한 번만)
+compiled_graph = build_graph()
 
 
 # ---------------------------------------------------------------------------
@@ -89,14 +106,7 @@ async def run_analysis_workflow(
 ) -> None:
     """분석 워크플로우를 실행한다 (BackgroundTask에서 호출).
 
-    실행 순서:
-    1. DB 상태를 running으로 업데이트
-    2. document_parser 실행
-    3. [rights_analysis, market_data, news_analysis] 병렬 실행
-    4. valuation 실행
-    5. report_generator 실행
-    6. DB에 결과 저장 + 상태를 done/error로 업데이트
-    7. WebSocket 완료 알림
+    astream(stream_mode="updates")로 각 노드 완료 시 WebSocket 알림을 전송한다.
     """
     # DB: status → running, 파일 경로 조회
     async with async_session() as db:
@@ -111,6 +121,7 @@ async def run_analysis_workflow(
         # file_paths가 없으면 DB에서 업로드된 파일 경로를 조회
         if not file_paths:
             from sqlalchemy import select
+
             from app.models.file import UploadedFile
 
             result = await db.execute(
@@ -135,58 +146,71 @@ async def run_analysis_workflow(
         })
         return
 
-    # 초기 상태
-    state = AgentState(
-        analysis_id=analysis_id,
-        file_paths=file_paths,
-    )
-
-    await _send_progress(analysis_id, "document_parser", "running", 0)
+    # 초기 상태 (모든 필드에 기본값 제공)
+    initial_state: AgentState = {
+        "analysis_id": analysis_id,
+        "file_paths": file_paths,
+        "registry": None,
+        "appraisal": None,
+        "sale_item": None,
+        "status_report": None,
+        "rights_analysis": None,
+        "market_data": None,
+        "news_analysis": None,
+        "valuation": None,
+        "report": None,
+        "errors": [],
+    }
 
     try:
-        # 1) 문서 파싱
-        state = await _run_node_with_retry("document_parser", document_parser_node, state)
-        await _send_progress(analysis_id, "document_parser", "done", 100)
+        # astream으로 노드 완료를 추적하며 WebSocket 진행도 전송
+        completed: set[str] = set()
+        final_state: dict[str, Any] = dict(initial_state)
 
-        # 2) 병렬 분석 (권리/시세/뉴스)
-        for name in PARALLEL_NODES:
-            await _send_progress(analysis_id, name, "running", 0)
+        await _send_progress(analysis_id, "document_parser", "running", 0)
 
-        async def _run_parallel_node(name: str) -> None:
-            nonlocal state
-            # 병렬 노드는 state를 공유하지만 각각 다른 필드를 수정하므로 안전
-            await _run_node_with_retry(name, NODE_REGISTRY[name], state)
+        async for event in compiled_graph.astream(
+            initial_state,
+            stream_mode="updates",
+        ):
+            for node_name, updates in event.items():
+                if node_name not in _NODE_STAGES:
+                    continue
 
-        await asyncio.gather(
-            _run_parallel_node("rights_analysis"),
-            _run_parallel_node("market_data"),
-            _run_parallel_node("news_analysis"),
-        )
+                completed.add(node_name)
+                await _send_progress(analysis_id, node_name, "done", 100)
 
-        for name in PARALLEL_NODES:
-            await _send_progress(analysis_id, name, "done", 100)
+                # 다음 단계 running 신호 전송
+                if node_name == "document_parser":
+                    for p in PARALLEL_NODES:
+                        await _send_progress(analysis_id, p, "running", 0)
+                elif node_name in PARALLEL_NODES and all(p in completed for p in PARALLEL_NODES):
+                    await _send_progress(analysis_id, "valuation", "running", 0)
+                elif node_name == "valuation":
+                    await _send_progress(analysis_id, "report_generator", "running", 0)
 
-        # 3) 가치 평가
-        await _send_progress(analysis_id, "valuation", "running", 0)
-        state = await _run_node_with_retry("valuation", valuation_node, state)
-        await _send_progress(analysis_id, "valuation", "done", 100)
-
-        # 4) 보고서 생성
-        await _send_progress(analysis_id, "report_generator", "running", 0)
-        state = await _run_node_with_retry("report_generator", report_generator_node, state)
-        await _send_progress(analysis_id, "report_generator", "done", 100)
+                # final_state 갱신 (errors는 reducer가 처리하므로 별도 누적)
+                if isinstance(updates, dict):
+                    for key, value in updates.items():
+                        if key == "errors":
+                            final_state.setdefault("errors", [])
+                            final_state["errors"].extend(value)
+                        else:
+                            final_state[key] = value
 
         # DB: 결과 저장
-        final_status = AnalysisStatus.DONE if state.report else AnalysisStatus.ERROR
+        state_report = final_state.get("report")
+        final_status = AnalysisStatus.DONE if state_report else AnalysisStatus.ERROR
 
-        # parsed_documents 조합
         parsed_docs: dict = {}
-        if state.registry:
-            parsed_docs["registry"] = _to_json(state.registry)
-        if state.appraisal:
-            parsed_docs["appraisal"] = _to_json(state.appraisal)
-        if state.sale_item:
-            parsed_docs["sale_item"] = _to_json(state.sale_item)
+        if final_state.get("registry"):
+            parsed_docs["registry"] = _to_json(final_state["registry"])
+        if final_state.get("appraisal"):
+            parsed_docs["appraisal"] = _to_json(final_state["appraisal"])
+        if final_state.get("sale_item"):
+            parsed_docs["sale_item"] = _to_json(final_state["sale_item"])
+
+        errors = final_state.get("errors", [])
 
         async with async_session() as db:
             analysis = await db.get(Analysis, analysis_id)
@@ -194,12 +218,12 @@ async def run_analysis_workflow(
                 analysis.status = final_status
                 analysis.completed_at = datetime.now(timezone.utc)
                 analysis.parsed_documents = parsed_docs if parsed_docs else None
-                analysis.report = state.report
-                analysis.rights_analysis = _to_json(state.rights_analysis)
-                analysis.market_data = _to_json(state.market_data)
-                analysis.news_analysis = _to_json(state.news_analysis)
-                analysis.valuation = _to_json(state.valuation)
-                analysis.errors = state.errors if state.errors else None
+                analysis.report = state_report
+                analysis.rights_analysis = _to_json(final_state.get("rights_analysis"))
+                analysis.market_data = _to_json(final_state.get("market_data"))
+                analysis.news_analysis = _to_json(final_state.get("news_analysis"))
+                analysis.valuation = _to_json(final_state.get("valuation"))
+                analysis.errors = errors if errors else None
                 extract_summary_fields(analysis)
                 await db.commit()
 
@@ -227,8 +251,11 @@ async def run_analysis_workflow(
 
 
 # ---------------------------------------------------------------------------
-# 헬퍼 함수
+# 헬퍼
 # ---------------------------------------------------------------------------
+
+# 노드 이름 집합 (WebSocket 진행도 대상)
+_NODE_STAGES: set[str] = set(WORKFLOW_NODES)
 
 
 def _to_json(obj: Any) -> dict | None:

@@ -202,14 +202,16 @@ def test_tenant_without_opposition():
 @pytest.mark.asyncio
 async def test_rights_analysis_node_no_registry():
     """등기부등본 파싱 결과가 없으면 에러 메시지를 추가한다."""
-    state = AgentState(analysis_id="test-no-reg")
-    # registry가 None인 상태
+    state: AgentState = {
+        "analysis_id": "test-no-reg",
+    }
+    # registry가 없는 상태
 
     result = await rights_analysis_node(state)
 
-    assert result.rights_analysis is None
-    assert len(result.errors) == 1
-    assert "등기부등본" in result.errors[0]
+    assert result["rights_analysis"] is None
+    assert len(result.get("errors", [])) == 1
+    assert "등기부등본" in result["errors"][0]
 
 
 # ---------------------------------------------------------------------------

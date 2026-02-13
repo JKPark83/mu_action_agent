@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -194,10 +193,10 @@ async def test_extract_registry_data(sample_registry_text: str):
 @pytest.mark.asyncio
 async def test_document_parser_node():
     """document_parser_node가 state에 파싱 결과를 저장한다."""
-    state = AgentState(
-        analysis_id="test-123",
-        file_paths=["/fake/registry.pdf", "/fake/appraisal.pdf"],
-    )
+    state: AgentState = {
+        "analysis_id": "test-123",
+        "file_paths": ["/fake/registry.pdf", "/fake/appraisal.pdf"],
+    }
 
     # PDF 추출 mock
     async def mock_extract(file_path: str):
@@ -236,11 +235,11 @@ async def test_document_parser_node():
     ):
         result = await document_parser_node(state)
 
-    assert result.registry is not None
-    assert result.registry.property_address == "서울시 강남구"
-    assert result.appraisal is not None
-    assert result.appraisal.appraised_value == 350000000
-    assert len(result.errors) == 0
+    assert result["registry"] is not None
+    assert result["registry"].property_address == "서울시 강남구"
+    assert result["appraisal"] is not None
+    assert result["appraisal"].appraised_value == 350000000
+    assert len(result.get("errors", [])) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +264,10 @@ def test_parse_json_response_code_block():
 @pytest.mark.asyncio
 async def test_document_parser_node_handles_extraction_error():
     """파싱 중 오류가 발생하면 errors에 기록하고 계속 진행한다."""
-    state = AgentState(analysis_id="test-err", file_paths=["/fake/broken.pdf"])
+    state: AgentState = {
+        "analysis_id": "test-err",
+        "file_paths": ["/fake/broken.pdf"],
+    }
 
     with patch(
         "app.agents.nodes.document_parser.extract_text_from_pdf",
@@ -274,9 +276,9 @@ async def test_document_parser_node_handles_extraction_error():
     ):
         result = await document_parser_node(state)
 
-    assert len(result.errors) == 1
-    assert "PDF 손상" in result.errors[0]
-    assert result.registry is None
+    assert len(result.get("errors", [])) == 1
+    assert "PDF 손상" in result["errors"][0]
+    assert result["registry"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +289,10 @@ async def test_document_parser_node_handles_extraction_error():
 @pytest.mark.asyncio
 async def test_document_parser_node_auction_summary():
     """auction_summary로 분류된 복합문서에서 등기/감정/매각 3가지를 모두 추출한다."""
-    state = AgentState(
-        analysis_id="test-auction",
-        file_paths=["/fake/tankauction.pdf"],
-    )
+    state: AgentState = {
+        "analysis_id": "test-auction",
+        "file_paths": ["/fake/tankauction.pdf"],
+    }
 
     # PDF 추출 mock - 탱크옥션 종합 페이지 텍스트
     async def mock_extract(file_path: str):
@@ -341,23 +343,23 @@ async def test_document_parser_node_auction_summary():
         result = await document_parser_node(state)
 
     # 3가지 모두 추출되어야 함
-    assert result.registry is not None
-    assert result.registry.property_address == "경기도 김포시 운양동 1301-1 한강신도시롯데캐슬 301동 6층 601호"
-    assert result.registry.area == pytest.approx(84.9823)
-    assert result.appraisal is not None
-    assert result.appraisal.appraised_value == 546000000
-    assert result.sale_item is not None
-    assert result.sale_item.case_number == "2025타경33712"
-    assert len(result.errors) == 0
+    assert result["registry"] is not None
+    assert result["registry"].property_address == "경기도 김포시 운양동 1301-1 한강신도시롯데캐슬 301동 6층 601호"
+    assert result["registry"].area == pytest.approx(84.9823)
+    assert result["appraisal"] is not None
+    assert result["appraisal"].appraised_value == 546000000
+    assert result["sale_item"] is not None
+    assert result["sale_item"].case_number == "2025타경33712"
+    assert len(result.get("errors", [])) == 0
 
 
 @pytest.mark.asyncio
 async def test_document_parser_node_auction_summary_partial_failure():
     """auction_summary에서 일부 추출이 실패해도 나머지는 정상 추출한다."""
-    state = AgentState(
-        analysis_id="test-auction-partial",
-        file_paths=["/fake/tankauction.pdf"],
-    )
+    state: AgentState = {
+        "analysis_id": "test-auction-partial",
+        "file_paths": ["/fake/tankauction.pdf"],
+    }
 
     async def mock_extract(file_path: str):
         return "경매 2025타경33712 매각기일 감정가 건물등기 임차인 현황 tankauction", []
@@ -394,7 +396,7 @@ async def test_document_parser_node_auction_summary_partial_failure():
         result = await document_parser_node(state)
 
     # 등기/감정은 성공, 매각은 실패해도 에러 없이 진행
-    assert result.registry is not None
-    assert result.appraisal is not None
-    assert result.sale_item is None
-    assert len(result.errors) == 0  # 개별 추출 실패는 warning 로그만, errors에 추가하지 않음
+    assert result["registry"] is not None
+    assert result["appraisal"] is not None
+    assert result["sale_item"] is None
+    assert len(result.get("errors", [])) == 0  # 개별 추출 실패는 warning 로그만, errors에 추가하지 않음

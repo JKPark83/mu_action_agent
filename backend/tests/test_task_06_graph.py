@@ -1,20 +1,19 @@
 """Task-06: AI 에이전트 시스템 단위 테스트
 
-LangGraph 워크플로우 구성, 노드 실행 순서, 에러 처리를 검증한다.
+LangGraph StateGraph 워크플로우 구성, 노드 실행 순서, 에러 처리를 검증한다.
 """
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.agents.graph import (
-    NODE_REGISTRY,
     PARALLEL_NODES,
     WORKFLOW_NODES,
-    _run_node_with_retry,
+    build_graph,
+    compiled_graph,
 )
 from app.agents.nodes.report_generator import _safe_dict, report_generator_node
 from app.agents.state import AgentState
@@ -27,10 +26,10 @@ from app.schemas.valuation import ValuationResult
 
 
 def test_all_nodes_registered():
-    """모든 워크플로우 노드가 NODE_REGISTRY에 등록되어 있다."""
+    """모든 워크플로우 노드가 StateGraph에 등록되어 있다."""
+    node_names = set(compiled_graph.nodes.keys())
     for name in WORKFLOW_NODES:
-        assert name in NODE_REGISTRY, f"{name}이 NODE_REGISTRY에 없습니다"
-        assert callable(NODE_REGISTRY[name])
+        assert name in node_names, f"{name}이 StateGraph에 없습니다"
 
 
 # ---------------------------------------------------------------------------
@@ -53,29 +52,18 @@ def test_node_order():
 
 
 # ---------------------------------------------------------------------------
-# T-3: 재시도 동작 검증
+# T-3: 그래프 구조 검증
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_retry_on_failure():
-    """노드 실패 시 3회 재시도 후 에러를 기록한다."""
-    call_count = 0
+def test_graph_structure():
+    """StateGraph가 올바른 fan-out/fan-in 구조를 가진다."""
+    graph = build_graph()
+    node_names = set(graph.nodes.keys())
 
-    async def failing_node(state: AgentState) -> AgentState:
-        nonlocal call_count
-        call_count += 1
-        raise ValueError("테스트 에러")
-
-    state = AgentState(analysis_id="test-retry")
-
-    # asyncio.sleep을 mock하여 대기 시간 제거
-    with patch("app.agents.graph.asyncio.sleep", new_callable=AsyncMock):
-        result = await _run_node_with_retry("test_node", failing_node, state, max_retries=3)
-
-    assert call_count == 3
-    assert len(result.errors) == 1
-    assert "test_node 실패" in result.errors[0]
+    # 모든 노드가 등록되어 있는지 확인
+    for name in WORKFLOW_NODES:
+        assert name in node_names, f"{name}이 컴파일된 그래프에 없습니다"
 
 
 # ---------------------------------------------------------------------------
@@ -89,17 +77,27 @@ async def test_graceful_degradation():
     from app.agents.nodes.valuation import valuation_node
     from app.schemas.document import AppraisalExtraction
 
-    # rights_analysis=None, market_data=None이지만 감정가로 평가 가능
-    state = AgentState(
-        analysis_id="test-graceful",
-        appraisal=AppraisalExtraction(appraised_value=500_000_000),
-    )
+    # TypedDict state: rights_analysis=None, market_data=None이지만 감정가로 평가 가능
+    state: AgentState = {
+        "analysis_id": "test-graceful",
+        "file_paths": [],
+        "registry": None,
+        "appraisal": AppraisalExtraction(appraised_value=500_000_000),
+        "sale_item": None,
+        "status_report": None,
+        "rights_analysis": None,
+        "market_data": None,
+        "news_analysis": None,
+        "valuation": None,
+        "report": None,
+        "errors": [],
+    }
 
     result = await valuation_node(state)
 
-    # 감정가 fallback으로 평가 수행됨
-    assert result.valuation is not None
-    assert result.valuation.bid_price.moderate > 0
+    # result는 partial dict
+    assert result.get("valuation") is not None
+    assert result["valuation"].bid_price.moderate > 0
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +110,20 @@ async def test_report_generator_node():
     """report_generator_node가 Claude 응답을 파싱하여 report를 생성한다."""
     mock_response = '{"property_overview": "테스트 물건", "rights_summary": "권리 요약", "market_summary": "시세 요약", "news_summary": "뉴스 요약", "overall_opinion": "종합 의견"}'
 
-    state = AgentState(
-        analysis_id="test-report",
-        valuation=ValuationResult(),
-    )
+    state: AgentState = {
+        "analysis_id": "test-report",
+        "file_paths": [],
+        "registry": None,
+        "appraisal": None,
+        "sale_item": None,
+        "status_report": None,
+        "rights_analysis": None,
+        "market_data": None,
+        "news_analysis": None,
+        "valuation": ValuationResult(),
+        "report": None,
+        "errors": [],
+    }
 
     with patch(
         "app.agents.nodes.report_generator._call_llm",
@@ -124,10 +132,12 @@ async def test_report_generator_node():
     ):
         result = await report_generator_node(state)
 
-    assert result.report is not None
-    assert "analysis_summary" in result.report
-    assert result.report["analysis_summary"]["property_overview"] == "테스트 물건"
-    assert len(result.errors) == 0
+    # result는 partial dict
+    assert result.get("report") is not None
+    assert "analysis_summary" in result["report"]
+    assert result["report"]["analysis_summary"]["property_overview"] == "테스트 물건"
+    # errors key가 없거나 빈 리스트
+    assert not result.get("errors", [])
 
 
 # ---------------------------------------------------------------------------

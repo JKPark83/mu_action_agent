@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 
 from anthropic import AsyncAnthropic
 
@@ -31,92 +29,66 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
-def _fix_json(text: str) -> str:
-    """LLM이 생성한 JSON의 흔한 오류를 수정한다."""
-    # trailing comma 제거: ,} → } / ,] → ]
-    text = re.sub(r",\s*([}\]])", r"\1", text)
-    return text
+# ---------------------------------------------------------------------------
+# tool_use 스키마 — Claude가 항상 유효한 JSON 구조로 응답하도록 강제
+# ---------------------------------------------------------------------------
+
+NEWS_ANALYSIS_TOOL = {
+    "name": "save_news_analysis",
+    "description": "뉴스 분석 결과를 저장합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "analyzed_news": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "sentiment": {
+                            "type": "string",
+                            "enum": ["positive", "negative", "neutral"],
+                        },
+                        "impact_score": {"type": "number"},
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["title", "sentiment", "impact_score", "summary"],
+                },
+            },
+            "positive_factors": {"type": "array", "items": {"type": "string"}},
+            "negative_factors": {"type": "array", "items": {"type": "string"}},
+            "area_attractiveness_score": {"type": "number"},
+            "investment_opinion": {"type": "string"},
+            "outlook": {"type": "string", "enum": ["긍정", "중립", "부정"]},
+            "market_trend_summary": {"type": "string"},
+        },
+        "required": [
+            "analyzed_news",
+            "positive_factors",
+            "negative_factors",
+            "area_attractiveness_score",
+            "investment_opinion",
+            "outlook",
+            "market_trend_summary",
+        ],
+    },
+}
 
 
-def _close_truncated_json(text: str) -> str:
-    """max_tokens로 잘린 JSON의 열린 괄호를 닫아준다."""
-    # 마지막 완전한 항목 이후의 불완전한 부분을 제거
-    # 마지막으로 완전한 }, 또는 ], 뒤를 자름
-    last_complete = max(text.rfind("},"), text.rfind("],"))
-    if last_complete > 0:
-        text = text[: last_complete + 1]
-
-    # 열린 괄호를 역순으로 닫아줌
-    open_brackets: list[str] = []
-    in_string = False
-    escape = False
-    for ch in text:
-        if escape:
-            escape = False
-            continue
-        if ch == "\\":
-            escape = True
-            continue
-        if ch == '"' and not escape:
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch in "{[":
-            open_brackets.append(ch)
-        elif ch == "}" and open_brackets and open_brackets[-1] == "{":
-            open_brackets.pop()
-        elif ch == "]" and open_brackets and open_brackets[-1] == "[":
-            open_brackets.pop()
-
-    for bracket in reversed(open_brackets):
-        text += "]" if bracket == "[" else "}"
-
-    return text
-
-
-def _try_parse(raw: str) -> dict:
-    """JSON 파싱을 시도하고, 실패하면 다양한 복구를 시도한다."""
-    # 1차: 원본 그대로
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-    # 2차: trailing comma 수정
-    try:
-        return json.loads(_fix_json(raw))
-    except json.JSONDecodeError:
-        pass
-    # 3차: 잘린 JSON 복구 (max_tokens 초과 시)
-    return json.loads(_fix_json(_close_truncated_json(raw)))
-
-
-def _parse_json_response(text: str) -> dict:
-    """LLM 응답에서 JSON을 추출한다."""
-    # 1. ```json ... ``` 블록
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if match:
-        return _try_parse(match.group(1).strip())
-    # 2. 텍스트 내 첫 번째 { ... } 블록
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return _try_parse(match.group(0))
-    # 3. 전체가 JSON
-    return _try_parse(text.strip())
-
-
-async def _call_llm(prompt: str, max_tokens: int = 4096) -> str:
-    """Anthropic Claude API를 호출한다."""
+async def _call_llm_structured(prompt: str, max_tokens: int = 8192) -> dict:
+    """Anthropic Claude API를 tool_use 방식으로 호출하여 구조화된 dict를 반환한다."""
     client = _get_client()
     response = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
+        tools=[NEWS_ANALYSIS_TOOL],
+        tool_choice={"type": "tool", "name": "save_news_analysis"},
     )
-    text = response.content[0].text
-    if response.stop_reason == "max_tokens":
-        logger.warning("LLM 응답이 max_tokens(%d)로 잘렸습니다. 잘린 JSON 복구를 시도합니다.", max_tokens)
-    return text
+    for block in response.content:
+        if block.type == "tool_use":
+            return block.input
+    raise ValueError("LLM이 tool_use 응답을 반환하지 않았습니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +128,7 @@ async def analyze_news_with_claude(
     news_text = _format_news_for_prompt(news_items)
     prompt = NEWS_ANALYSIS_PROMPT.format(area=target_area, news_list=news_text)
 
-    raw = await _call_llm(prompt, max_tokens=8192)
-    return _parse_json_response(raw)
+    return await _call_llm_structured(prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +136,7 @@ async def analyze_news_with_claude(
 # ---------------------------------------------------------------------------
 
 
-async def news_analysis_node(state: AgentState) -> AgentState:
+async def news_analysis_node(state: AgentState) -> dict:
     """뉴스 분석 에이전트 노드.
 
     처리 흐름:
@@ -174,16 +145,17 @@ async def news_analysis_node(state: AgentState) -> AgentState:
     3. 키워드별 네이버 뉴스 API 호출
     4. 중복 뉴스 제거
     5. Claude로 뉴스 분류/요약/종합 분석
-    6. NewsAnalysisResult 생성하여 state에 저장
+    6. NewsAnalysisResult를 partial dict로 반환
     """
-    errors: list[str] = list(state.errors)
-    registry = state.registry
+    new_errors: list[str] = []
+    registry = state.get("registry")
 
     if not registry:
-        errors.append("뉴스분석 실패: 소재지 정보 없음")
-        state.news_analysis = None
-        state.errors = errors
-        return state
+        new_errors.append("뉴스분석 실패: 소재지 정보 없음")
+        result_dict: dict = {"news_analysis": None}
+        if new_errors:
+            result_dict["errors"] = new_errors
+        return result_dict
 
     try:
         address = registry.property_address
@@ -220,13 +192,14 @@ async def news_analysis_node(state: AgentState) -> AgentState:
                 "뉴스분석 실패: 수집된 뉴스 0건. 키워드: %s, API 실패: %d건, 주소: %s",
                 queries, len(failed_queries), address,
             )
-            errors.append(
+            new_errors.append(
                 f"뉴스분석: 수집된 뉴스 없음 ({address}). "
                 f"키워드 {len(queries)}개 모두 결과 없음. 네이버 API 키를 확인하세요."
             )
-            state.news_analysis = None
-            state.errors = errors
-            return state
+            result_dict = {"news_analysis": None}
+            if new_errors:
+                result_dict["errors"] = new_errors
+            return result_dict
 
         # Claude 분석 (최대 15건 — 토큰 초과 방지)
         analysis = await analyze_news_with_claude(unique_news[:15], address)
@@ -263,12 +236,13 @@ async def news_analysis_node(state: AgentState) -> AgentState:
             result.area_attractiveness_score,
         )
 
-        state.news_analysis = result
+        result_dict = {"news_analysis": result}
 
     except Exception as exc:
         logger.exception("뉴스분석 오류")
-        errors.append(f"뉴스분석 오류: {exc}")
-        state.news_analysis = None
+        new_errors.append(f"뉴스분석 오류: {exc}")
+        result_dict = {"news_analysis": None}
 
-    state.errors = errors
-    return state
+    if new_errors:
+        result_dict["errors"] = new_errors
+    return result_dict
