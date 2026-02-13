@@ -24,6 +24,14 @@ function formatMan(value: number): string {
   return `${value.toLocaleString()}만`
 }
 
+function formatManDetail(value: number): string {
+  if (value >= 10000) {
+    const eok = value / 10000
+    return `${eok.toFixed(2)}억`
+  }
+  return `${value.toLocaleString()}만`
+}
+
 /** 기간 필터 적용 후 cutoff 날짜 문자열("YYYY-MM") 반환 */
 function getCutoffDate(period: Period): string {
   if (period === 'MAX') return '0000-00'
@@ -161,7 +169,7 @@ export default function PriceChart({ data, appraisedValue }: PriceChartProps) {
             />
             <YAxis tickFormatter={formatMan} tick={{ fontSize: 12 }} stroke="#9ca3af" />
             <Tooltip
-              formatter={(value) => [`${formatMan(Number(value))}원`, isYearly ? '연평균 거래가' : '월평균 거래가']}
+              formatter={(value) => [`${formatManDetail(Number(value))}원`, isYearly ? '연평균 거래가' : '월평균 거래가']}
               labelFormatter={(label) =>
                 isYearly ? `${label}년` : label.length >= 7 ? `${label.substring(0, 4)}년 ${label.substring(5)}월` : label
               }

@@ -70,40 +70,37 @@ def _safe_dict(obj: object) -> str:
         return str(obj)[:3000]
 
 
-async def report_generator_node(state: AgentState) -> AgentState:
+async def report_generator_node(state: AgentState) -> dict:
     """보고서 생성 에이전트 노드.
 
     처리 흐름:
     1. 모든 분석 결과를 수집
     2. Claude로 사용자 친화적 리포트 텍스트 생성
-    3. 최종 report dict 생성하여 state에 저장
+    3. 최종 report dict를 partial dict로 반환
     """
-    errors: list[str] = list(state.errors)
+    new_errors: list[str] = []
 
     try:
         prompt = REPORT_PROMPT.format(
-            rights=_safe_dict(state.rights_analysis),
-            market=_safe_dict(state.market_data),
-            news=_safe_dict(state.news_analysis),
-            valuation=_safe_dict(state.valuation),
+            rights=_safe_dict(state.get("rights_analysis")),
+            market=_safe_dict(state.get("market_data")),
+            news=_safe_dict(state.get("news_analysis")),
+            valuation=_safe_dict(state.get("valuation")),
         )
 
         raw = await _call_llm(prompt, max_tokens=3000)
         analysis_summary = _parse_json_response(raw)
 
         # 최종 리포트 조합: 프론트엔드가 기대하는 구조에 맞춰 생성
-        # 프론트엔드 AnalysisReport 타입:
-        #   recommendation, reasoning, risk_summary,
-        #   bid_price, sale_price, expected_roi,
-        #   cost_breakdown, confidence_score, disclaimer, chart_data
         report: dict = {
             "analysis_summary": analysis_summary,
         }
 
         # 가치평가 결과를 report 최상위 레벨로 플래튼
-        if state.valuation:
+        valuation = state.get("valuation")
+        if valuation:
             try:
-                val = asdict(state.valuation)
+                val = asdict(valuation)
                 report["recommendation"] = val.get("recommendation", "hold")
                 report["reasoning"] = val.get("reasoning", "")
                 report["risk_summary"] = val.get("risk_summary", "")
@@ -117,9 +114,10 @@ async def report_generator_node(state: AgentState) -> AgentState:
                 pass
 
         # 시세 차트 데이터 (월별 평균가에서 추출)
-        if state.market_data:
+        market_data = state.get("market_data")
+        if market_data:
             try:
-                md = asdict(state.market_data)
+                md = asdict(market_data)
                 chart_data: dict = {}
                 if md.get("monthly_averages"):
                     chart_data["price_trend"] = [
@@ -137,12 +135,13 @@ async def report_generator_node(state: AgentState) -> AgentState:
         )
 
         logger.info("보고서 생성 완료")
-        state.report = report
+        result_dict: dict = {"report": report}
 
     except Exception as exc:
         logger.exception("보고서 생성 오류")
-        errors.append(f"보고서 생성 오류: {exc}")
-        state.report = {"error": str(exc), "partial": True}
+        new_errors.append(f"보고서 생성 오류: {exc}")
+        result_dict = {"report": {"error": str(exc), "partial": True}}
 
-    state.errors = errors
-    return state
+    if new_errors:
+        result_dict["errors"] = new_errors
+    return result_dict

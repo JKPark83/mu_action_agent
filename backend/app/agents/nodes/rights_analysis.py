@@ -302,7 +302,7 @@ async def analyze_with_claude(
 # ---------------------------------------------------------------------------
 
 
-async def rights_analysis_node(state: AgentState) -> AgentState:
+async def rights_analysis_node(state: AgentState) -> dict:
     """권리분석 에이전트 노드.
 
     처리 흐름:
@@ -311,17 +311,18 @@ async def rights_analysis_node(state: AgentState) -> AgentState:
     3. 각 권리 인수/소멸 분류
     4. 임차인 분석
     5. Claude로 특수 권리 해석 + 위험도 종합 평가
-    6. RightsAnalysisResult 생성하여 state에 저장
+    6. RightsAnalysisResult를 partial dict로 반환
     """
-    errors: list[str] = list(state.errors)
-    registry = state.registry
-    sale_item = state.sale_item
+    new_errors: list[str] = []
+    registry = state.get("registry")
+    sale_item = state.get("sale_item")
 
     if not registry:
-        errors.append("권리분석 실패: 등기부등본 파싱 결과 없음")
-        state.rights_analysis = None
-        state.errors = errors
-        return state
+        new_errors.append("권리분석 실패: 등기부등본 파싱 결과 없음")
+        result_dict: dict = {"rights_analysis": None}
+        if new_errors:
+            result_dict["errors"] = new_errors
+        return result_dict
 
     try:
         # 1) 말소기준권리 판단
@@ -333,14 +334,17 @@ async def rights_analysis_node(state: AgentState) -> AgentState:
 
         if basis_date is None:
             # 말소기준권리를 찾을 수 없는 경우 최소한의 결과 반환
-            state.rights_analysis = RightsAnalysisResult(
-                extinguishment_basis=basis_desc,
-                risk_level=RiskLevel.HIGH,
-                risk_factors=["말소기준권리를 특정할 수 없어 위험도가 높습니다"],
-                confidence_score=0.3,
-            )
-            state.errors = errors
-            return state
+            result_dict = {
+                "rights_analysis": RightsAnalysisResult(
+                    extinguishment_basis=basis_desc,
+                    risk_level=RiskLevel.HIGH,
+                    risk_factors=["말소기준권리를 특정할 수 없어 위험도가 높습니다"],
+                    confidence_score=0.3,
+                ),
+            }
+            if new_errors:
+                result_dict["errors"] = new_errors
+            return result_dict
 
         # 2) 권리 인수/소멸 분류
         all_entries = registry.section_a_entries + registry.section_b_entries
@@ -398,7 +402,7 @@ async def rights_analysis_node(state: AgentState) -> AgentState:
             risk_factors.extend(claude_result["warnings"])
 
         # 5) 결과 조립
-        result = RightsAnalysisResult(
+        analysis_result = RightsAnalysisResult(
             extinguishment_basis=basis_desc,
             assumed_rights=assumed,
             extinguished_rights=extinguished,
@@ -410,12 +414,13 @@ async def rights_analysis_node(state: AgentState) -> AgentState:
             confidence_score=claude_result["confidence"],
         )
 
-        state.rights_analysis = result
+        result_dict = {"rights_analysis": analysis_result}
 
     except Exception as exc:
         logger.exception("권리분석 오류")
-        errors.append(f"권리분석 오류: {exc}")
-        state.rights_analysis = None
+        new_errors.append(f"권리분석 오류: {exc}")
+        result_dict = {"rights_analysis": None}
 
-    state.errors = errors
-    return state
+    if new_errors:
+        result_dict["errors"] = new_errors
+    return result_dict

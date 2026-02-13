@@ -247,7 +247,7 @@ async def _collect_transactions(
 # ---------------------------------------------------------------------------
 
 
-async def market_data_node(state: AgentState) -> AgentState:
+async def market_data_node(state: AgentState) -> dict:
     """시장 데이터 수집 에이전트 노드.
 
     처리 흐름:
@@ -255,16 +255,17 @@ async def market_data_node(state: AgentState) -> AgentState:
     2. 주소 → 법정동코드 변환
     3. 최근 12개월간 매매 + 전월세 실거래가 API 호출
     4. 아파트: 단지명 필터링 / 그 외: 면적 기반 필터링
-    5. MarketDataResult 생성하여 state에 저장
+    5. MarketDataResult를 partial dict로 반환
     """
-    errors: list[str] = list(state.errors)
-    registry = state.registry
+    new_errors: list[str] = []
+    registry = state.get("registry")
 
     if not registry:
-        errors.append("시세분석 실패: 소재지 정보 없음")
-        state.market_data = None
-        state.errors = errors
-        return state
+        new_errors.append("시세분석 실패: 소재지 정보 없음")
+        result_dict: dict = {"market_data": None}
+        if new_errors:
+            result_dict["errors"] = new_errors
+        return result_dict
 
     try:
         address = registry.property_address
@@ -282,10 +283,11 @@ async def market_data_node(state: AgentState) -> AgentState:
 
         lawd_code = address_to_lawd_code(address)
         if not lawd_code:
-            errors.append(f"시세분석 실패: 법정동코드 변환 실패 ({address})")
-            state.market_data = None
-            state.errors = errors
-            return state
+            new_errors.append(f"시세분석 실패: 법정동코드 변환 실패 ({address})")
+            result_dict = {"market_data": None}
+            if new_errors:
+                result_dict["errors"] = new_errors
+            return result_dict
 
         logger.info(
             "시세분석 시작: %s (법정동코드=%s, 유형=%s, 면적=%.1f㎡, 단지명=%s)",
@@ -312,12 +314,14 @@ async def market_data_node(state: AgentState) -> AgentState:
             all_rent = filtered_rent if len(filtered_rent) >= 3 else all_rent
 
         if not all_trade and not all_rent:
-            errors.append(f"시세분석: 거래 데이터 없음 ({address})")
-            state.market_data = MarketDataResult(confidence_score=0.0)
-            state.errors = errors
-            return state
+            new_errors.append(f"시세분석: 거래 데이터 없음 ({address})")
+            result_dict = {"market_data": MarketDataResult(confidence_score=0.0)}
+            if new_errors:
+                result_dict["errors"] = new_errors
+            return result_dict
 
-        appraised_value = state.appraisal.appraised_value if state.appraisal else 0
+        appraisal = state.get("appraisal")
+        appraised_value = appraisal.appraised_value if appraisal else 0
 
         # === 매매 분석 ===
         trade_result, avg_trade_price = analyze_trade_data(all_trade, target_area, appraised_value)
@@ -353,12 +357,13 @@ async def market_data_node(state: AgentState) -> AgentState:
             result.price_trend,
         )
 
-        state.market_data = result
+        result_dict = {"market_data": result}
 
     except Exception as exc:
         logger.exception("시세분석 오류")
-        errors.append(f"시세분석 오류: {exc}")
-        state.market_data = None
+        new_errors.append(f"시세분석 오류: {exc}")
+        result_dict = {"market_data": None}
 
-    state.errors = errors
-    return state
+    if new_errors:
+        result_dict["errors"] = new_errors
+    return result_dict

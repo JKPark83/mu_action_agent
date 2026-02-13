@@ -215,7 +215,7 @@ def determine_recommendation(
 # ---------------------------------------------------------------------------
 
 
-async def valuation_node(state: AgentState) -> AgentState:
+async def valuation_node(state: AgentState) -> dict:
     """가치평가 에이전트 노드.
 
     처리 흐름:
@@ -225,14 +225,14 @@ async def valuation_node(state: AgentState) -> AgentState:
     4. 매도 적정가 산출 (3단계)
     5. 수익률 분석
     6. 입찰 추천 판단
-    7. ValuationResult 생성하여 state에 저장
+    7. ValuationResult를 partial dict로 반환
     """
-    errors: list[str] = list(state.errors)
-    rights = state.rights_analysis
-    market = state.market_data
-    news = state.news_analysis
-    appraisal = state.appraisal
-    registry = state.registry
+    new_errors: list[str] = []
+    rights = state.get("rights_analysis")
+    market = state.get("market_data")
+    news = state.get("news_analysis")
+    appraisal = state.get("appraisal")
+    registry = state.get("registry")
 
     try:
         # 면적 결정: registry → 시장 거래 데이터 평균 면적 순으로 fallback
@@ -252,10 +252,11 @@ async def valuation_node(state: AgentState) -> AgentState:
         if estimated_value <= 0 and appraisal and appraisal.appraised_value > 0:
             estimated_value = appraisal.appraised_value
         if estimated_value <= 0:
-            errors.append("가치평가: 시세 추정 불가 (시장데이터·감정가 모두 없음 또는 면적 정보 없음)")
-            state.valuation = None
-            state.errors = errors
-            return state
+            new_errors.append("가치평가: 시세 추정 불가 (시장데이터·감정가 모두 없음 또는 면적 정보 없음)")
+            result_dict: dict = {"valuation": None}
+            if new_errors:
+                result_dict["errors"] = new_errors
+            return result_dict
 
         property_type = registry.property_type if registry else "주택"
 
@@ -337,7 +338,7 @@ async def valuation_node(state: AgentState) -> AgentState:
 
         full_reasoning = "\n".join(reasoning_parts)
 
-        result = ValuationResult(
+        valuation_result = ValuationResult(
             recommendation=recommendation,
             bid_price=bid_range,
             sale_price=sale_range,
@@ -355,12 +356,13 @@ async def valuation_node(state: AgentState) -> AgentState:
             f"{bid_range.moderate:,}",
         )
 
-        state.valuation = result
+        result_dict = {"valuation": valuation_result}
 
     except Exception as exc:
         logger.exception("가치평가 오류")
-        errors.append(f"가치평가 오류: {exc}")
-        state.valuation = None
+        new_errors.append(f"가치평가 오류: {exc}")
+        result_dict = {"valuation": None}
 
-    state.errors = errors
-    return state
+    if new_errors:
+        result_dict["errors"] = new_errors
+    return result_dict

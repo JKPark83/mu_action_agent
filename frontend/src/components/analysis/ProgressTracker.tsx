@@ -95,18 +95,7 @@ export default function ProgressTracker({ overall, stages }: ProgressTrackerProp
                 >
                   {label}
                 </span>
-                {progress.status === 'running' && (
-                  <span className="text-xs text-blue-500">{progress.progress}%</span>
-                )}
               </div>
-              {progress.status === 'running' && (
-                <div className="w-full bg-gray-100 rounded-full h-1.5 mt-1">
-                  <div
-                    className="bg-blue-400 h-1.5 rounded-full transition-all duration-300"
-                    style={{ width: `${progress.progress}%` }}
-                  />
-                </div>
-              )}
             </div>
           </div>
         ))}
