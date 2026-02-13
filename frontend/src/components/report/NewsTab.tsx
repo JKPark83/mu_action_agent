@@ -59,7 +59,7 @@ export default function NewsTab({ data }: { data?: NewsData }) {
         {data.area_attractiveness_score != null && (
           <div className="bg-gray-50 rounded-lg p-3">
             <p className="text-xs text-gray-500">지역 매력도</p>
-            <p className="text-sm font-bold text-gray-900">{(data.area_attractiveness_score * 10).toFixed(1)} / 10</p>
+            <p className="text-sm font-bold text-gray-900">{(data.area_attractiveness_score / 10).toFixed(1)} / 10</p>
           </div>
         )}
         {data.outlook_6month && (
